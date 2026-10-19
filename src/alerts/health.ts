@@ -130,8 +130,13 @@ export interface WindowRow {
 /** Deja alertar una sola vez por ventana TTL. Sin KV alerta igualmente (best effort). */
 async function shouldAlert(kv: KVNamespace | undefined, key: string, ttlSec: number): Promise<boolean> {
   if (!kv) return true;
-  if (await kv.get(key)) return false;
-  await kv.put(key, "1", { expirationTtl: ttlSec });
+  try {
+    if (await kv.get(key)) return false;
+    await kv.put(key, "1", { expirationTtl: ttlSec });
+  } catch (err) {
+    // Fase 25.14 — sin KV (cuota diaria agotada) se avisa igualmente.
+    console.warn("health throttle KV failed:", err instanceof Error ? err.message : String(err));
+  }
   return true;
 }
 
@@ -244,6 +249,9 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
   if (eventsInWindow === 0) {
     await env.X402_NONCES.put(SILENCE_FLAG_KEY, String(nowMs), {
       expirationTtl: SILENCE_FLAG_TTL_SEC,
+    }).catch((err: unknown) => {
+      // Fase 25.14 — best-effort: sin la marca solo se pierde el "restablecido".
+      console.warn("health silence flag KV write failed:", err instanceof Error ? err.message : String(err));
     });
     if (await shouldAlert(env.X402_NONCES, "health:silence:alert", SILENCE_DEDUPE_SEC)) {
       await sendTelegram(

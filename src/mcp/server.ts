@@ -512,7 +512,14 @@ export async function dispatch(
       // after tool_catalog(family) within the same Mcp-Session-Id. Real push
       // notifications are future work once the transport supports sessions.
       if (!sessionId) return successResponse(id, { tools: core });
-      const raw = await env.X402_NONCES.get(`${EXPANDED_FAMILIES_KEY_PREFIX}${sessionId}`);
+      // KV is best-effort here too (Fase 25.14): a read that throws (daily
+      // quota, transient error) must still return the curated core.
+      let raw: string | null = null;
+      try {
+        raw = await env.X402_NONCES.get(`${EXPANDED_FAMILIES_KEY_PREFIX}${sessionId}`);
+      } catch (err) {
+        console.warn("expanded_families KV get failed:", err instanceof Error ? err.message : String(err));
+      }
       if (!raw) return successResponse(id, { tools: core });
       let expandedFamilyIds: string[] = [];
       try {
@@ -589,20 +596,30 @@ export async function dispatch(
       // expanded via tool_catalog(family), so a later tools/list on the same
       // Mcp-Session-Id can include it. No real push — see capabilities note.
       // -----------------------------------------------------------------------
+      // Fase 25.14 — the whole block is best-effort: on 2026-10-19 the KV
+      // namespace hit its free-tier daily write limit and this put threw
+      // ("KV put() limit exceeded for the day."), turning EVERY
+      // tool_catalog(family=...) into an HTTP 500 for the rest of the day.
+      // Losing the session hint only costs a later tools/list its extras.
       if (sessionId && toolName === "tool_catalog" && typeof toolArgs.family === "string" && toolArgs.family in FAMILIES) {
+        const family = toolArgs.family;
         const kvKey = `${EXPANDED_FAMILIES_KEY_PREFIX}${sessionId}`;
-        const existingRaw = await env.X402_NONCES.get(kvKey);
-        let existing: string[] = [];
         try {
-          existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
-        } catch {
-          existing = [];
-        }
-        if (!existing.includes(toolArgs.family)) {
-          existing.push(toolArgs.family);
-          await env.X402_NONCES.put(kvKey, JSON.stringify(existing), {
-            expirationTtl: EXPANDED_FAMILIES_TTL_SECONDS,
-          });
+          const existingRaw = await env.X402_NONCES.get(kvKey);
+          let existing: string[] = [];
+          try {
+            existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
+          } catch {
+            existing = [];
+          }
+          if (!existing.includes(family)) {
+            existing.push(family);
+            await env.X402_NONCES.put(kvKey, JSON.stringify(existing), {
+              expirationTtl: EXPANDED_FAMILIES_TTL_SECONDS,
+            });
+          }
+        } catch (err) {
+          console.warn("expanded_families KV write failed:", err instanceof Error ? err.message : String(err));
         }
       }
 
@@ -1160,7 +1177,14 @@ export async function dispatch(
 
         // Step 5: handle free call — mark used, skip settlement
         if (isFreeCall) {
-          await env.X402_NONCES.put(freeCallKey, new Date().toISOString());
+          // Best-effort (Fase 25.14): the tool already ran and the caller is
+          // owed its result. If the marker can't be written the payer may get
+          // one more free call later — cheaper than a 500 after doing the work.
+          try {
+            await env.X402_NONCES.put(freeCallKey, new Date().toISOString());
+          } catch (err) {
+            console.warn("first_free KV write failed:", err instanceof Error ? err.message : String(err));
+          }
           log({
             toolName,
             paymentType: "x402_free_first",

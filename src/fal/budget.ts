@@ -57,7 +57,11 @@ export async function recordFalCost(env: FalBudgetEnv, actualCogsMicro: bigint):
   const raw = await env.X402_NONCES.get(key);
   const current = raw ? BigInt(raw) : 0n;
   const next = current + actualCogsMicro;
-  await env.X402_NONCES.put(key, next.toString(), { expirationTtl: 172_800 });
+  // Best-effort (Fase 25.14): fal.ai already spent the money; a KV failure
+  // undercounts today's soft budget, it must not fail the caller's result.
+  await env.X402_NONCES.put(key, next.toString(), { expirationTtl: 172_800 }).catch((err: unknown) => {
+    console.warn("fal budget KV write failed:", err instanceof Error ? err.message : String(err));
+  });
 
   const limit = budgetMicro(env);
   if (limit <= 0n) return;
@@ -67,7 +71,9 @@ export async function recordFalCost(env: FalBudgetEnv, actualCogsMicro: bigint):
     const alertKey = `fal-budget-alert:${key}`;
     const alreadyAlerted = await env.X402_NONCES.get(alertKey);
     if (!alreadyAlerted) {
-      await env.X402_NONCES.put(alertKey, "1", { expirationTtl: 172_800 });
+      await env.X402_NONCES.put(alertKey, "1", { expirationTtl: 172_800 }).catch((err: unknown) => {
+        console.warn("fal budget alert KV write failed:", err instanceof Error ? err.message : String(err));
+      });
       const usedUsd = (Number(next) / 1_000_000).toFixed(3);
       const limitUsd = (Number(limit) / 1_000_000).toFixed(2);
       try {

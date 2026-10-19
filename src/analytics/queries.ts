@@ -5,8 +5,11 @@
 
 import { FAMILIES } from "../tools/catalog.js";
 import { PROBE_CLIENTS, PROBE_NAME_PATTERNS, PROBE_UA_PATTERNS, isProbeClient } from "./surface.js";
-import { classifyToolError } from "../alerts/error-classification.js";
+import { classifyToolError, isPagedToolError, type ToolErrorClass } from "../alerts/error-classification.js";
+import { PAID_TYPES, PAID_TYPES_SQL, DEPOSIT_TYPES_SQL } from "./payment-types.js";
+import { ANALYTICS_RETENTION_DAYS, CONNECT_RETENTION_DAYS } from "./retention.js";
 
+const MS_24H = 24 * 60 * 60 * 1000;
 const MS_7D = 7 * 24 * 60 * 60 * 1000;
 const MS_30D = 30 * 24 * 60 * 60 * 1000;
 const MS_365D = 365 * 24 * 60 * 60 * 1000;
@@ -50,13 +53,13 @@ const TOOL_FAMILIES: Record<string, string[]> = (() => {
 })();
 
 /**
- * payment_type values that represent a failure — used for error-rate and
- * recent-errors queries. Fase 24.7 — added fiat_deposit_failed (the exact
- * failure mode of the 9-day-uncredited-webhook incident, previously
- * invisible in this table) and the api_key/oauth rejection/insufficient
- * types, for the same reason prepaid_* were already here.
+ * Fase 25.15 — tipos que aparecen en "Recent errors" (el log del panel).
+ * NO alimentan error_rate_by_tool: ese grafico solo cuenta `tool_error`, que
+ * es lo unico que puede ser un fallo de ToolSnap (ver isPagedToolError). El
+ * handshake normal de x402 (402_rejected + no_payment_payload) tampoco entra
+ * aqui: es Payment mix, no un error.
  */
-const ERROR_TYPES = [
+const LOGGED_FAILURE_TYPES = [
   "402_rejected",
   "prepaid_insufficient",
   "prepaid_rejected",
@@ -65,13 +68,55 @@ const ERROR_TYPES = [
   "api_key_rejected",
   "api_key_insufficient",
   "oauth_insufficient",
+  "oauth_rejected",
   "settle_failed",
   "tool_error",
 ] as const;
-const ERROR_TYPES_SQL = ERROR_TYPES.map((t) => `'${t}'`).join(", ");
+const LOGGED_FAILURE_TYPES_SQL = LOGGED_FAILURE_TYPES.map((t) => `'${t}'`).join(", ");
+const MONEY_FAILURE_TYPES: ReadonlySet<string> = new Set(["settle_failed", "deposit_failed", "fiat_deposit_failed"]);
 
-/** Fase 24.7 — payment_types that represent cash entering the system (deposits/purchases), not usage revenue. */
-const DEPOSIT_TYPES_SQL = `'deposit_success', 'fiat_deposit_success'`;
+/** Clase de una fila de "Recent errors": las tres del clasificador para tool_error, y dos de negocio. */
+export type LoggedFailureClass = ToolErrorClass | "payment" | "money";
+
+/**
+ * Fase 25.15 — las tres ventanas que el selector del panel puede pedir SIN
+ * leer una fila mas: cada consulta de 30 d devuelve ademas sus cortes a 7 d y
+ * 24 h con SUM(CASE WHEN ts >= ?) sobre las mismas filas. 90d/1y no tienen
+ * corte propio (costaria leer 365 d de eventos en cada carga): el panel
+ * ensena 30 d y lo dice en el titulo.
+ */
+export type WindowKey = "h24" | "d7" | "d30";
+export const WINDOW_KEYS: readonly WindowKey[] = ["h24", "d7", "d30"];
+
+export interface ErrorRateRow {
+  tool: string;
+  total: number;
+  errors: number;
+  /** Lo que pagina: isPagedToolError. EXACTAMENTE lo que suena en Telegram. */
+  our_errors: number;
+  upstream_errors: number;
+  caller_errors: number;
+  /** Clase internal que NO pagina (probe o admin): visible, no roja. */
+  muted_errors: number;
+  error_pct: number;
+}
+
+export interface WindowStats {
+  calls: number;
+  revenue: number;
+  unique_payers: number;
+  unique_anon_agents: number;
+  avg_latency_ms: number;
+  p50_latency_ms: number;
+  p95_latency_ms: number;
+  top_tools: Array<{ tool: string; calls: number }>;
+  payment_breakdown: Array<{ type: string; calls: number }>;
+  calls_by_client: Array<{ client: string; calls: number }>;
+  /** Agentes (no llamadas) que vieron el 402 en la ventana y convirtieron en 7 d, cualquier rail. */
+  paywall_funnel: { hit_payers: number; converted_payers: number };
+  error_rate_by_tool: ErrorRateRow[];
+  latency_by_tool: Array<{ tool: string; calls: number; p50_latency_ms: number; p95_latency_ms: number }>;
+}
 
 export interface DashboardData {
   summary: {
@@ -137,14 +182,23 @@ export interface DashboardData {
   };
   /** Fase 24.7 — log of individual credit purchases (both rails), last 365d, newest first. */
   credit_purchases: Array<{ ts: number; type: string; payer: string; amount: number; detail: string | null }>;
+  /** Fase 25.15 — sin el handshake 402 sin wallet; con client_name y clase (ver LoggedFailureClass). */
   recent_errors: Array<{
     ts: number;
     tool: string;
     type: string;
+    class: LoggedFailureClass;
+    /** true solo si este evento habria sonado en Telegram (isPagedToolError). */
+    paged: boolean;
     payer: string;
+    client_name: string | null;
     client: string | null;
     detail: string | null;
   }>;
+  /** Fase 25.15 — todas las tarjetas que siguen al selector, por ventana. Los campos de arriba son el corte de 30 d (compatibilidad con /reports). */
+  by_window: Record<WindowKey, WindowStats>;
+  /** Fase 25.15 — para que el panel diga que cubre de verdad. */
+  retention: { events_days: number; connect_days: number; oldest_event_ts: number | null };
   /**
    * Fase 24.6 / 25.9 — errores partidos en tres clases con el MISMO
    * clasificador que decide que pagina en Telegram (error-classification.ts):
@@ -154,16 +208,7 @@ export interface DashboardData {
    * registra y se mira aqui. `errors` sigue siendo el total combinado por
    * compatibilidad con los consumidores existentes.
    */
-  error_rate_by_tool: Array<{
-    tool: string;
-    total: number;
-    errors: number;
-    our_errors: number;
-    upstream_errors: number;
-    /** Fase 25.9 — el agente llamo mal a la tool (falta un argumento, URL invalida). Ni fallo nuestro ni del destino. */
-    caller_errors: number;
-    error_pct: number;
-  }>;
+  error_rate_by_tool: ErrorRateRow[];
   /** Fase 24.6 — p50/p95 latency per tool (top 10 by call volume), catches a slow provider hidden by the global average. */
   latency_by_tool: Array<{ tool: string; calls: number; p50_latency_ms: number; p95_latency_ms: number }>;
   /**
@@ -238,7 +283,6 @@ function percentileOf(sortedAsc: number[], fraction: number): number {
   return sortedAsc[idx];
 }
 
-const PAID_CONVERSION_TYPES = ["x402_paid", "x402_free_first", "prepaid", "api_key", "oauth"];
 
 /**
  * Fase 24.6 — how many distinct payers hit the x402 paywall (402_rejected)
@@ -251,13 +295,23 @@ const PAID_CONVERSION_TYPES = ["x402_paid", "x402_free_first", "prepaid", "api_k
  * activity — or (b) same session_id — covers the classic 402 → sign →
  * retry flow, which happens within one MCP session (server-assigned since
  * Fase 24.5).
+ *
+ * Fase 25.15 — una sola consulta devuelve el embudo para VARIAS ventanas
+ * (`boundaries`, cada una >= `since`): los hits se leen una vez y cada corte
+ * es un count(DISTINCT CASE WHEN ts >= ?). Un agente cuenta como convertido
+ * en la ventana en la que vio el 402, aunque pagara despues de cerrarse.
  */
-async function paywallConversionFunnel(
+export async function paywallFunnelByWindow(
   db: D1Database,
   since: number,
+  boundaries: readonly number[],
   internalFilter: string
-): Promise<{ hit_payers: number; converted_payers: number }> {
-  const paidPlaceholders = PAID_CONVERSION_TYPES.map(() => "?").join(", ");
+): Promise<Array<{ hit_payers: number; converted_payers: number }>> {
+  const paidPlaceholders = PAID_TYPES.map(() => "?").join(", ");
+  const hitCols = boundaries.map((_, i) => `count(DISTINCT CASE WHEN ts >= ? THEN payer END) AS h${i}`).join(", ");
+  const convCols = boundaries
+    .map((_, i) => `(SELECT count(DISTINCT CASE WHEN hit_ts >= ? THEN payer END) FROM converted) AS c${i}`)
+    .join(", ");
   const row = await db
     .prepare(
       `WITH hits AS (
@@ -266,7 +320,7 @@ async function paywallConversionFunnel(
          WHERE ts >= ? AND payment_type = '402_rejected'${internalFilter}
        ),
        converted AS (
-         SELECT DISTINCT h.payer
+         SELECT DISTINCT h.payer, h.ts AS hit_ts
          FROM hits h
          JOIN analytics_events e
            ON (e.payer = h.payer OR (h.session_id IS NOT NULL AND e.session_id = h.session_id))
@@ -274,19 +328,32 @@ async function paywallConversionFunnel(
           AND e.ts <= h.ts + ${MS_7D}
           AND (e.tool_name = 'wallet_setup' OR e.payment_type IN (${paidPlaceholders}))
        )
-       SELECT (SELECT count(DISTINCT payer) FROM hits) AS hit_payers,
-              (SELECT count(*) FROM converted) AS converted_payers`
+       SELECT ${hitCols}, ${convCols} FROM hits`
     )
-    .bind(since, ...PAID_CONVERSION_TYPES)
-    .first<{ hit_payers: number; converted_payers: number }>();
-  return { hit_payers: row?.hit_payers ?? 0, converted_payers: row?.converted_payers ?? 0 };
+    .bind(since, ...PAID_TYPES, ...boundaries, ...boundaries)
+    .first<Record<string, number>>();
+  return boundaries.map((_, i) => ({
+    hit_payers: row?.[`h${i}`] ?? 0,
+    converted_payers: row?.[`c${i}`] ?? 0,
+  }));
+}
+
+/** Una sola ventana (digest semanal). */
+async function paywallConversionFunnel(
+  db: D1Database,
+  since: number,
+  internalFilter: string
+): Promise<{ hit_payers: number; converted_payers: number }> {
+  const [w] = await paywallFunnelByWindow(db, since, [since], internalFilter);
+  return w;
 }
 
 /**
  * Fase 25.8 — cache en memoria del isolate para el payload del panel.
  *
- * Una sola carga de /analytics/data lanza 22 consultas sobre
- * analytics_events. El panel se refresca solo, hay dos consumidores mas
+ * Una sola carga de /analytics/data lanza 25 consultas (24 sobre
+ * analytics_events/directory_stats y 1 sobre balances; ~115k filas leidas al
+ * dia en total con el uso real, medido en Fase 25.15). El panel se refresca solo, hay dos consumidores mas
  * (/reports/analytics y la rutina de review) y un F5 repetido recalculaba
  * todo. 5 min de TTL absorben las rafagas (recargas seguidas, dos pestanas
  * abiertas, el boton ↻ pulsado varias veces) sin que el dashboard se note
@@ -312,6 +379,119 @@ export async function getDashboardData(
   return fresh;
 }
 
+/** Fila cruda de tool_error de los ultimos 30 d: lo minimo para clasificar y cortar por ventana. */
+export interface ErrorRowIn {
+  ts: number;
+  tool: string;
+  detail: string | null;
+  payer: string;
+  client_name: string | null;
+  client: string | null;
+}
+
+/**
+ * Fase 25.15 — error_rate_by_tool de UNA ventana a partir de las filas crudas
+ * (solo tool_error) y los totales por tool. Exportada para el test que afirma
+ * la invariante: `our_errors` cuenta exactamente las filas que
+ * isPagedToolError acepta, es decir, las que el pager habria enviado.
+ */
+export function rollupErrorRates(
+  rows: readonly ErrorRowIn[],
+  totals: ReadonlyMap<string, number>,
+  since: number
+): ErrorRateRow[] {
+  const agg = new Map<string, { errors: number; our: number; upstream: number; caller: number; muted: number }>();
+  for (const row of rows) {
+    if (row.ts < since) continue;
+    const a = agg.get(row.tool) ?? { errors: 0, our: 0, upstream: 0, caller: 0, muted: 0 };
+    a.errors += 1;
+    const kind = classifyToolError(row.detail);
+    if (kind === "upstream") a.upstream += 1;
+    else if (kind === "caller") a.caller += 1;
+    else if (
+      isPagedToolError({
+        paymentType: "tool_error",
+        detail: row.detail,
+        payer: row.payer,
+        clientName: row.client_name,
+        client: row.client,
+      })
+    )
+      a.our += 1;
+    else a.muted += 1;
+    agg.set(row.tool, a);
+  }
+  return Array.from(agg.entries())
+    .map(([tool, a]) => {
+      const total = totals.get(tool) ?? a.errors;
+      return {
+        tool,
+        total,
+        errors: a.errors,
+        our_errors: a.our,
+        upstream_errors: a.upstream,
+        caller_errors: a.caller,
+        muted_errors: a.muted,
+        error_pct: total > 0 ? Math.round((a.errors / total) * 100) : 0,
+      };
+    })
+    .sort((a, b) => b.errors - a.errors)
+    .slice(0, 10);
+}
+
+/** Fase 25.15 — latencia de una ventana: global (avg/p50/p95) y por tool (top 10 por volumen). */
+export function rollupLatency(
+  rows: readonly { ts: number; tool: string; latency_ms: number }[],
+  since: number
+): Pick<WindowStats, "avg_latency_ms" | "p50_latency_ms" | "p95_latency_ms" | "latency_by_tool"> {
+  const all: number[] = [];
+  let sum = 0;
+  const byTool = new Map<string, number[]>();
+  for (const row of rows) {
+    if (row.ts < since) continue;
+    all.push(row.latency_ms);
+    sum += row.latency_ms;
+    const arr = byTool.get(row.tool);
+    if (arr) arr.push(row.latency_ms);
+    else byTool.set(row.tool, [row.latency_ms]);
+  }
+  all.sort((a, b) => a - b);
+  const latency_by_tool = Array.from(byTool.entries())
+    .map(([tool, values]) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      return { tool, calls: sorted.length, p50_latency_ms: percentileOf(sorted, 0.5), p95_latency_ms: percentileOf(sorted, 0.95) };
+    })
+    .sort((a, b) => b.calls - a.calls)
+    .slice(0, 10);
+  return {
+    avg_latency_ms: all.length ? Math.round(sum / all.length) : 0,
+    p50_latency_ms: percentileOf(all, 0.5),
+    p95_latency_ms: percentileOf(all, 0.95),
+    latency_by_tool,
+  };
+}
+
+/** Filas `{..., c30, c7, c1}` de una consulta con tres cortes -> lista ordenada de una ventana, sin ceros. */
+function windowedList<K extends string>(
+  rows: readonly (Record<"c30" | "c7" | "c1", number> & Record<K, string>)[],
+  key: K,
+  col: "c30" | "c7" | "c1",
+  limit?: number
+): Array<Record<K, string> & { calls: number }> {
+  const out = rows
+    .filter((r) => (r[col] ?? 0) > 0)
+    .map((r) => ({ [key]: r[key], calls: r[col] }) as Record<K, string> & { calls: number })
+    .sort((a, b) => b.calls - a.calls);
+  return limit ? out.slice(0, limit) : out;
+}
+
+/** Fase 25.15 — clase de una fila de "Recent errors" (ver LoggedFailureClass). */
+export function loggedFailureClass(type: string, detail: string | null): LoggedFailureClass {
+  if (type === "tool_error") return classifyToolError(detail);
+  if (MONEY_FAILURE_TYPES.has(type)) return "money";
+  return "payment";
+}
+
 async function computeDashboardData(
   db: D1Database,
   includeInternal: boolean
@@ -320,6 +500,10 @@ async function computeDashboardData(
   const since30 = now - MS_30D;
   const since365 = now - MS_365D;
   const since7 = now - MS_7D;
+  const since1 = now - MS_24H;
+  /** Orden fijo de las ventanas en cada consulta con tres cortes: 30 d (la propia WHERE), 7 d, 24 h. */
+  const WINDOW_SINCE: Record<WindowKey, number> = { d30: since30, d7: since7, h24: since1 };
+  const WINDOW_COL: Record<WindowKey, "c30" | "c7" | "c1"> = { d30: "c30", d7: "c7", h24: "c1" };
   // Own dev/testing traffic (internal = 1) is excluded by default — the panel
   // measures real external demand. Directory/registry probes (Fase 24.6) are
   // bundled into the same toggle: real signal is what ?include_internal=1
@@ -353,36 +537,35 @@ async function computeDashboardData(
     directoryCoverage,
     directoryStatsLatest,
     smitheryUseCountSeries,
-    paywallFunnel,
+    paywallFunnels,
+    oldestEvent,
   ] = await Promise.all([
+      // Fase 25.15 — tres cortes sobre las mismas filas (ver WindowKey).
+      // payers = identificados (wallet/cuenta); los anonimos van aparte.
       db
         .prepare(
-          `SELECT count(*) AS calls,
-                  COALESCE(sum(CASE WHEN payment_type NOT IN (${DEPOSIT_TYPES_SQL}) THEN revenue_usdc ELSE 0 END), 0) AS revenue,
-                  count(DISTINCT CASE WHEN payer NOT LIKE 'anon%' THEN payer END) AS payers,
-                  COALESCE(avg(latency_ms), 0) AS avg_latency
+          `SELECT count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1,
+                  COALESCE(sum(CASE WHEN payment_type NOT IN (${DEPOSIT_TYPES_SQL}) THEN revenue_usdc ELSE 0 END), 0) AS r30,
+                  COALESCE(sum(CASE WHEN ts >= ? AND payment_type NOT IN (${DEPOSIT_TYPES_SQL}) THEN revenue_usdc ELSE 0 END), 0) AS r7,
+                  COALESCE(sum(CASE WHEN ts >= ? AND payment_type NOT IN (${DEPOSIT_TYPES_SQL}) THEN revenue_usdc ELSE 0 END), 0) AS r1,
+                  count(DISTINCT CASE WHEN payer NOT LIKE 'anon%' THEN payer END) AS p30,
+                  count(DISTINCT CASE WHEN ts >= ? AND payer NOT LIKE 'anon%' THEN payer END) AS p7,
+                  count(DISTINCT CASE WHEN ts >= ? AND payer NOT LIKE 'anon%' THEN payer END) AS p1
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}`
         )
-        .bind(since30)
-        .first<{
-          calls: number;
-          revenue: number;
-          payers: number;
-          avg_latency: number;
-        }>(),
+        .bind(since7, since1, since7, since1, since7, since1, since30)
+        .first<{ c30: number; c7: number; c1: number; r30: number; r7: number; r1: number; p30: number; p7: number; p1: number }>(),
 
       db
         .prepare(
-          `SELECT tool_name AS tool, count(*) AS calls
+          `SELECT tool_name AS tool, count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY tool_name
-           ORDER BY calls DESC
-           LIMIT 10`
+           GROUP BY tool_name`
         )
-        .bind(since30)
-        .all<{ tool: string; calls: number }>(),
+        .bind(since7, since1, since30)
+        .all<{ tool: string; c30: number; c7: number; c1: number }>(),
 
       // 402_rejected is split into a benign "no wallet yet" handshake
       // (detail = no_payment_payload) vs. a real payment-verification failure,
@@ -399,14 +582,13 @@ async function computeDashboardData(
                  THEN '402_pay_failed'
                ELSE payment_type
              END AS type,
-             count(*) AS calls
+             count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY type
-           ORDER BY calls DESC`
+           GROUP BY type`
         )
-        .bind(since30)
-        .all<{ type: string; calls: number }>(),
+        .bind(since7, since1, since30)
+        .all<{ type: string; c30: number; c7: number; c1: number }>(),
 
       // Fase 24.7 — cash purchases split by rail. Replays (Polar webhook
       // redelivery, guarded by polar_orders PK — see index.ts) log
@@ -515,10 +697,12 @@ async function computeDashboardData(
       // anchor across its sessions. A payer with N sessions stays 1 agent;
       // payers sharing a session collapse into 1. Sessionless rows fall back
       // to the raw payer.
+      // Fase 25.15 — el mapa de identidades se construye sobre 30 d y cada
+      // ventana cuenta los agentes canonicos con algun evento en ella.
       db
         .prepare(
           `WITH ev AS (
-             SELECT payer, NULLIF(session_id, '') AS sid
+             SELECT payer, NULLIF(session_id, '') AS sid, ts
              FROM analytics_events
              WHERE ts >= ? AND payment_type != 'connect' AND payer LIKE 'anon:%'${internalFilter}
            ),
@@ -531,10 +715,13 @@ async function computeDashboardData(
              LEFT JOIN anchors a ON p.sid = a.sid
              GROUP BY p.payer
            )
-           SELECT count(DISTINCT canon) AS anon_agents FROM canon`
+           SELECT count(DISTINCT c.canon) AS c30,
+                  count(DISTINCT CASE WHEN ev.ts >= ? THEN c.canon END) AS c7,
+                  count(DISTINCT CASE WHEN ev.ts >= ? THEN c.canon END) AS c1
+           FROM ev JOIN canon c ON ev.payer = c.payer`
         )
-        .bind(since30)
-        .first<{ anon_agents: number }>(),
+        .bind(since30, since7, since1)
+        .first<{ c30: number; c7: number; c1: number }>(),
 
       // Fase 24.7 — retention: distinct payers (excluding the legacy 'anon'
       // literal; anon:<hash> pseudonyms count) seen both this week and last.
@@ -571,11 +758,14 @@ async function computeDashboardData(
         .bind(now - 2 * MS_7D, since7, since7)
         .first<{ n: number }>(),
 
+      // Fase 25.15 — el log de fallos: sin el handshake 402 sin wallet (es
+      // Payment mix), con client_name ademas del UA crudo.
       db
         .prepare(
-          `SELECT ts, tool_name AS tool, payment_type AS type, payer, client, detail
+          `SELECT ts, tool_name AS tool, payment_type AS type, payer, client_name, client, detail
            FROM analytics_events
-           WHERE ts >= ? AND payment_type IN (${ERROR_TYPES_SQL})${internalFilter}
+           WHERE ts >= ? AND payment_type IN (${LOGGED_FAILURE_TYPES_SQL})
+             AND NOT (payment_type = '402_rejected' AND (detail IS NULL OR detail = 'no_payment_payload'))${internalFilter}
            ORDER BY ts DESC
            LIMIT 200`
         )
@@ -585,6 +775,7 @@ async function computeDashboardData(
           tool: string;
           type: string;
           payer: string;
+          client_name: string | null;
           client: string | null;
           detail: string | null;
         }>(),
@@ -595,45 +786,52 @@ async function computeDashboardData(
       db
         .prepare(
           // Fase 25.8 — es el denominador del error_pct por tool, y el
-          // numerador (errorRows) son solo payment_type de error, jamas un
-          // connect. Los connect ademas van todos con tool_name =
-          // 'initialize', un bucket propio que nadie consulta aqui: filtrarlos
-          // no altera ningun porcentaje y permite usar idx_ae_noconnect_ts en
-          // vez de escanear la tabla entera.
-          `SELECT tool_name AS tool, count(*) AS total
+          // numerador (errorRows) son solo tool_error, jamas un connect. Los
+          // connect ademas van todos con tool_name = 'initialize', un bucket
+          // propio que nadie consulta aqui: filtrarlos no altera ningun
+          // porcentaje y permite usar idx_ae_noconnect_ts en vez de escanear
+          // la tabla entera.
+          `SELECT tool_name AS tool, count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
            GROUP BY tool_name`
         )
-        .bind(since30)
-        .all<{ tool: string; total: number }>(),
+        .bind(since7, since1, since30)
+        .all<{ tool: string; c30: number; c7: number; c1: number }>(),
 
-      // Fase 24.6 — raw error rows (tool + detail only) so isUpstreamError
-      // (shared with error-alerts.ts) can classify each one in JS instead of
-      // duplicating that regex/string logic as SQL LIKE patterns.
+      // Fase 24.6 / 25.15 — raw tool_error rows so isPagedToolError (shared
+      // with error-alerts.ts) classifies each one in JS instead of
+      // duplicating that regex/string logic as SQL LIKE patterns. SOLO
+      // tool_error: durante un mes esta consulta traia todos los tipos de
+      // pago y classifyToolError("no_payment_payload") caia en "internal",
+      // asi que el panel pinto 59 fallos "nuestros" en 30 d que eran el
+      // handshake normal de x402, mientras el pager sonaba 0 veces.
       db
         .prepare(
-          `SELECT tool_name AS tool, detail
+          `SELECT ts, tool_name AS tool, detail, payer, client_name, client
            FROM analytics_events
-           WHERE ts >= ? AND payment_type IN (${ERROR_TYPES_SQL})${internalFilter}
+           WHERE ts >= ? AND payment_type = 'tool_error'${internalFilter}
+           ORDER BY ts DESC
            LIMIT 20000`
         )
         .bind(since30)
-        .all<{ tool: string; detail: string | null }>(),
+        .all<ErrorRowIn>(),
 
       // Fase 24.6 — raw per-call latency rows for the per-tool p50/p95
       // breakdown below (computed in JS, same bounded-fetch pattern as the
       // session funnel). Fase 25.8: el p50/p95 GLOBAL sale tambien de aqui
-      // (antes eran 4 consultas SQL aparte, la peor del panel).
+      // (antes eran 4 consultas SQL aparte, la peor del panel). Fase 25.15:
+      // con ts, para cortar por ventana en JS.
       db
         .prepare(
-          `SELECT tool_name AS tool, latency_ms
+          `SELECT ts, tool_name AS tool, latency_ms
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect' AND latency_ms > 0${internalFilter}
+           ORDER BY ts DESC
            LIMIT 20000`
         )
         .bind(since30)
-        .all<{ tool: string; latency_ms: number }>(),
+        .all<{ ts: number; tool: string; latency_ms: number }>(),
 
       // NOTE: GROUP BY the raw COALESCE(...) expression, not its output alias
       // ("client") — grouping by the alias mis-collapses rows in D1's SQLite
@@ -652,14 +850,13 @@ async function computeDashboardData(
 
       db
         .prepare(
-          `SELECT COALESCE(client_name, 'unknown') AS client, count(*) AS calls
+          `SELECT COALESCE(client_name, 'unknown') AS client, count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY COALESCE(client_name, 'unknown')
-           ORDER BY calls DESC`
+           GROUP BY COALESCE(client_name, 'unknown')`
         )
-        .bind(since30)
-        .all<{ client: string; calls: number }>(),
+        .bind(since7, since1, since30)
+        .all<{ client: string; c30: number; c7: number; c1: number }>(),
 
       db
         .prepare(
@@ -730,10 +927,13 @@ async function computeDashboardData(
         .bind(since30)
         .all<{ ts: number; use_count: number }>(),
 
-      paywallConversionFunnel(db, since30, internalFilter),
+      paywallFunnelByWindow(db, since30, [since30, since7, since1], internalFilter),
+
+      // Fase 25.15 — desde cuando hay datos (idx_ae_ts: una fila leida).
+      db.prepare(`SELECT MIN(ts) AS ts FROM analytics_events`).first<{ ts: number | null }>(),
     ]);
 
-  const s = summary ?? { calls: 0, revenue: 0, payers: 0, avg_latency: 0 };
+  const s = summary ?? { c30: 0, c7: 0, c1: 0, r30: 0, r7: 0, r1: 0, p30: 0, p7: 0, p1: 0 };
   const liability = creditLiability ?? { outstanding: 0, lifetime_purchased: 0, lifetime_consumed: 0, accounts: 0 };
 
   // Fase 24.7 — purchases-by-rail rolls up as { crypto, fiat }, defaulting a
@@ -782,73 +982,50 @@ async function computeDashboardData(
     funnelByClient.set(agg.client, bucket);
   }
 
-  // Fase 24.6 / 25.9 — classify each raw error row via the shared
-  // classifyToolError (error-classification.ts) and roll up per tool, joined against the
-  // separately-fetched total-calls-per-tool denominator.
-  const totalByToolMap = new Map((totalByTool.results ?? []).map((r) => [r.tool, r.total]));
-  const errorAgg = new Map<string, { errors: number; upstream: number; caller: number }>();
-  for (const row of errorRows.results ?? []) {
-    const agg = errorAgg.get(row.tool) ?? { errors: 0, upstream: 0, caller: 0 };
-    agg.errors += 1;
-    const kind = classifyToolError(row.detail);
-    if (kind === "upstream") agg.upstream += 1;
-    else if (kind === "caller") agg.caller += 1;
-    errorAgg.set(row.tool, agg);
+  // Fase 25.15 — una WindowStats por corte, todas de las mismas filas.
+  const toolRows = topTools.results ?? [];
+  const payRows = payBreakdown.results ?? [];
+  const clientRows = callsByClient.results ?? [];
+  const totalRows = totalByTool.results ?? [];
+  const errRows = errorRows.results ?? [];
+  const latRows = latencyRows.results ?? [];
+  const funnelByWindow: Record<WindowKey, { hit_payers: number; converted_payers: number }> = {
+    d30: paywallFunnels[0],
+    d7: paywallFunnels[1],
+    h24: paywallFunnels[2],
+  };
+  const sumCol = { d30: { c: s.c30, r: s.r30, p: s.p30 }, d7: { c: s.c7, r: s.r7, p: s.p7 }, h24: { c: s.c1, r: s.r1, p: s.p1 } };
+  const anonCol = { d30: anonAgents?.c30 ?? 0, d7: anonAgents?.c7 ?? 0, h24: anonAgents?.c1 ?? 0 };
+  const byWindow = {} as Record<WindowKey, WindowStats>;
+  for (const w of WINDOW_KEYS) {
+    const col = WINDOW_COL[w];
+    const since = WINDOW_SINCE[w];
+    const totals = new Map(totalRows.map((r) => [r.tool, r[col] ?? 0]));
+    byWindow[w] = {
+      calls: sumCol[w].c ?? 0,
+      revenue: sumCol[w].r ?? 0,
+      unique_payers: sumCol[w].p ?? 0,
+      unique_anon_agents: anonCol[w],
+      ...rollupLatency(latRows, since),
+      top_tools: windowedList(toolRows, "tool", col, 10),
+      payment_breakdown: windowedList(payRows, "type", col),
+      calls_by_client: windowedList(clientRows, "client", col),
+      paywall_funnel: funnelByWindow[w],
+      error_rate_by_tool: rollupErrorRates(errRows, totals, since),
+    };
   }
-  const errorRateByToolOut = Array.from(errorAgg.entries())
-    .map(([tool, agg]) => {
-      const total = totalByToolMap.get(tool) ?? agg.errors;
-      return {
-        tool,
-        total,
-        errors: agg.errors,
-        our_errors: agg.errors - agg.upstream - agg.caller,
-        upstream_errors: agg.upstream,
-        caller_errors: agg.caller,
-        error_pct: total > 0 ? Math.round((agg.errors / total) * 100) : 0,
-      };
-    })
-    .sort((a, b) => b.errors - a.errors)
-    .slice(0, 10);
-
-  // Fase 25.8 — p50/p95 global desde las mismas filas (ver nota en la
-  // cabecera de percentileOf): evita 4 consultas SQL por carga del panel.
-  const allLatencies = (latencyRows.results ?? [])
-    .map((r) => r.latency_ms)
-    .sort((a, b) => a - b);
-  const p50 = percentileOf(allLatencies, 0.5);
-  const p95 = percentileOf(allLatencies, 0.95);
-
-  // Fase 24.6 — per-tool p50/p95 from the raw latency rows, top 10 by volume.
-  const latencyByTool = new Map<string, number[]>();
-  for (const row of latencyRows.results ?? []) {
-    const arr = latencyByTool.get(row.tool);
-    if (arr) arr.push(row.latency_ms);
-    else latencyByTool.set(row.tool, [row.latency_ms]);
-  }
-  const latencyByToolOut = Array.from(latencyByTool.entries())
-    .map(([tool, values]) => {
-      const sorted = [...values].sort((a, b) => a - b);
-      return {
-        tool,
-        calls: sorted.length,
-        p50_latency_ms: percentileOf(sorted, 0.5),
-        p95_latency_ms: percentileOf(sorted, 0.95),
-      };
-    })
-    .sort((a, b) => b.calls - a.calls)
-    .slice(0, 10);
+  const d30 = byWindow.d30;
 
   return {
     summary: {
-      calls_30d: s.calls,
-      revenue_30d: s.revenue,
-      unique_payers_30d: s.payers,
-      unique_anon_agents_30d: anonAgents?.anon_agents ?? 0,
+      calls_30d: d30.calls,
+      revenue_30d: d30.revenue,
+      unique_payers_30d: d30.unique_payers,
+      unique_anon_agents_30d: d30.unique_anon_agents,
       returning_agents_7d: returningAgents?.n ?? 0,
-      avg_latency_ms: Math.round(s.avg_latency),
-      p50_latency_ms: p50,
-      p95_latency_ms: p95,
+      avg_latency_ms: d30.avg_latency_ms,
+      p50_latency_ms: d30.p50_latency_ms,
+      p95_latency_ms: d30.p95_latency_ms,
     },
     calls_by_day: (callsSeries.results ?? []).map((r) => ({
       day: dayLabel(r.ts),
@@ -860,8 +1037,8 @@ async function computeDashboardData(
     })),
     calls_by_halfhour: (callsHalfhour.results ?? []).map((r) => ({ ts: r.bucket, calls: r.calls })),
     revenue_by_halfhour: (revenueHalfhour.results ?? []).map((r) => ({ ts: r.bucket, revenue: r.revenue })),
-    top_tools: topTools.results ?? [],
-    payment_breakdown: payBreakdown.results ?? [],
+    top_tools: d30.top_tools,
+    payment_breakdown: d30.payment_breakdown,
     credits: {
       purchased_30d: purchasedByRail,
       outstanding_usdc: liability.outstanding,
@@ -870,21 +1047,37 @@ async function computeDashboardData(
       accounts: liability.accounts,
     },
     credit_purchases: creditPurchases.results ?? [],
-    recent_errors: recentErrors.results ?? [],
-    error_rate_by_tool: errorRateByToolOut,
-    latency_by_tool: latencyByToolOut,
+    recent_errors: (recentErrors.results ?? []).map((r) => ({
+      ...r,
+      class: loggedFailureClass(r.type, r.detail),
+      paged: isPagedToolError({
+        paymentType: r.type,
+        detail: r.detail,
+        payer: r.payer,
+        clientName: r.client_name,
+        client: r.client,
+      }),
+    })),
+    error_rate_by_tool: d30.error_rate_by_tool,
+    latency_by_tool: d30.latency_by_tool,
     directory_coverage: directoryCoverage.results ?? [],
     directory_stats: directoryStatsLatest.results ?? [],
     smithery_use_count_series: (smitheryUseCountSeries.results ?? []).map((r) => ({
       day: dayLabel(r.ts),
       use_count: r.use_count,
     })),
-    paywall_funnel: paywallFunnel,
+    paywall_funnel: d30.paywall_funnel,
     surface: {
       connects_by_client: connectsByClient.results ?? [],
-      calls_by_client: callsByClient.results ?? [],
+      calls_by_client: d30.calls_by_client,
       revenue_by_client: revenueByClient.results ?? [],
       funnel_by_client: Array.from(funnelByClient.entries()).map(([client, f]) => ({ client, ...f })),
+    },
+    by_window: byWindow,
+    retention: {
+      events_days: ANALYTICS_RETENTION_DAYS,
+      connect_days: CONNECT_RETENTION_DAYS,
+      oldest_event_ts: oldestEvent?.ts ?? null,
     },
   };
 }
@@ -933,7 +1126,8 @@ export async function getWeeklySurfaceDigest(db: D1Database, now = Date.now()): 
   const startThisWeek = now - MS_7D;
   const startLastWeek = now - 2 * MS_7D;
 
-  const PAID_TYPES = ["x402_paid", "x402_free_first", "prepaid", "api_key"];
+  // Fase 25.15 — misma definicion de "pagado" que el panel y el pager
+  // (payment-types.ts). La lista local de aqui omitia oauth.
   const paidPlaceholders = PAID_TYPES.map(() => "?").join(",");
 
   // Same "real external demand" notion as the panel: no internal traffic,

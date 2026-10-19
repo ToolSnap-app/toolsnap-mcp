@@ -44,7 +44,7 @@ const toc = [
 
     <p><strong>How the error text is redacted.</strong> An error message can quote what it received: a URL, a value you passed, the first line of a file that turned out to be HTML. That is the one place where the two columns above could leak into each other, so the message is scrubbed at the logging boundary, not tool by tool: URLs, double-quoted fragments, column lists and regex literals are replaced with a marker before anything is written to the database, the Worker log or our own alerts. What survives is the shape of the error, which is all we use it for. The full message still goes back to you in the tool response.</p>
 
-    <p>Retention on that metadata is 730 days, purged automatically by a daily cron. There is no separate "extended" log anywhere with more detail than what's in the table above. What you see here is the whole of it.</p>
+    <p>Retention on that metadata is 365 days (connection events: 60 days), purged automatically by a daily cron. There is no separate "extended" log anywhere with more detail than what's in the table above. What you see here is the whole of it.</p>
   </DocSection>
 
   <DocSection title="What we store, and for how long" id="storage" num="3">

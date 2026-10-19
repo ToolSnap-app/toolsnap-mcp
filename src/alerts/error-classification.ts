@@ -42,6 +42,8 @@
  * divergir — lo que el panel pinta en rojo es EXACTAMENTE lo que pagina.
  */
 
+import { isProbeClient } from "../analytics/surface.js";
+
 export type ToolErrorClass = "caller" | "upstream" | "internal";
 
 /**
@@ -218,4 +220,30 @@ export function isCallerError(detail?: string | null): boolean {
  */
 export function isOurError(detail?: string | null): boolean {
   return classifyToolError(detail) === "internal";
+}
+
+/**
+ * Fase 25.15 — EL predicado "este evento es un fallo de ToolSnap que pagina".
+ * Lo usan el pager (error-alerts.ts maybeAlertError) y el panel (queries.ts
+ * error_rate_by_tool / recent_errors): lo que el panel pinta en rojo es
+ * exactamente lo que suena en el movil, por construccion y con test propio.
+ *
+ * Solo un `tool_error` puede ser fallo nuestro. Los tipos de pago (402 sin
+ * wallet, saldo insuficiente, rechazo de API key) son resultados de negocio
+ * y viven en Payment mix; los fallos de dinero (settle/deposit) paginan por
+ * su propia via. `payer = "admin"` son pruebas nuestras y un escaner de
+ * directorios nunca despierta a nadie, aunque provoque un error interno.
+ */
+export function isPagedToolError(ev: {
+  paymentType: string;
+  detail?: string | null;
+  payer?: string | null;
+  clientName?: string | null;
+  client?: string | null;
+}): boolean {
+  if (ev.paymentType !== "tool_error") return false;
+  if (ev.payer === "admin") return false;
+  if (classifyToolError(ev.detail) !== "internal") return false;
+  if (isProbeClient(ev.clientName, ev.client)) return false;
+  return true;
 }

@@ -1,5 +1,7 @@
 import type { Env } from "../index.js";
 import { sendTelegram } from "./telegram.js";
+import { EXECUTED_TYPES } from "../analytics/payment-types.js";
+import { ANALYTICS_RETENTION_DAYS, CONNECT_RETENTION_DAYS } from "../analytics/retention.js";
 
 /**
  * Usage alerts for COGS tools backed by an external provider with a free-tier
@@ -26,16 +28,17 @@ const KV_TTL_SEC = 45 * 24 * 60 * 60;
 //
 // 1 ano para los eventos reales — cubre el timeframe de 1y del panel y a
 // ~150 llamadas/dia son ~55k filas, perfectamente escaneables.
-const ANALYTICS_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
+const ANALYTICS_RETENTION_MS = ANALYTICS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 // 60 dias para los eventos `connect`, que son el 83% de la tabla (33k de
 // 39.6k) y solo se leen en tres sitios, todos con ventana corta: los
 // "connects por cliente" del panel (30d) y las dos mitades del digest
 // semanal (14d). Todo connect mas viejo que eso es peso muerto que solo
 // encarece cada escaneo. 60d deja 2x de margen sobre la ventana mas larga.
-const CONNECT_RETENTION_MS = 60 * 24 * 60 * 60 * 1000;
+const CONNECT_RETENTION_MS = CONNECT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-/** Payment types that mean the tool actually executed (hit the provider). */
-const EXECUTED_TYPES = ["x402_paid", "prepaid", "free_tool", "x402_free_first"];
+// Fase 25.15 — EXECUTED_TYPES viene de analytics/payment-types.ts: la lista
+// local omitia api_key y oauth, asi que una captura pagada por esos rails no
+// contaba para el aviso de cuota de ScreenshotOne.
 
 function monthKey(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;

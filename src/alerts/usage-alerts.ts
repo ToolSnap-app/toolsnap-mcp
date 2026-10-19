@@ -112,6 +112,9 @@ export async function checkUsageAlerts(env: Env, now: Date = new Date()): Promis
     if (already) continue;
     await env.X402_NONCES.put(flagKey, new Date().toISOString(), {
       expirationTtl: KV_TTL_SEC,
+    }).catch((err: unknown) => {
+      // Fase 25.14 — best-effort: worst case the threshold alert repeats next run.
+      console.warn("screenshot threshold KV write failed:", err instanceof Error ? err.message : String(err));
     });
     let msg: string;
     if (t >= FREE_TIER) {
@@ -129,7 +132,9 @@ export async function checkUsageAlerts(env: Env, now: Date = new Date()): Promis
     const digestKey = `digest:screenshot:${month}:w${weekOfMonth(now)}`;
     const sent = await env.X402_NONCES.get(digestKey);
     if (!sent) {
-      await env.X402_NONCES.put(digestKey, "1", { expirationTtl: KV_TTL_SEC });
+      await env.X402_NONCES.put(digestKey, "1", { expirationTtl: KV_TTL_SEC }).catch((err: unknown) => {
+        console.warn("screenshot digest KV write failed:", err instanceof Error ? err.message : String(err));
+      });
       const remaining = Math.max(0, FREE_TIER - count);
       await sendTelegram(
         env,

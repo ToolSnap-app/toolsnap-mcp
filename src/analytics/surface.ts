@@ -12,6 +12,38 @@
 const SESSION_CLIENT_KEY_PREFIX = "session_client:";
 const SESSION_CLIENT_TTL_SECONDS = 86_400; // 24h — matches session-scoped KV elsewhere in this codebase.
 
+/**
+ * Fase 25.14 — where the per-session clientInfo actually lives.
+ *
+ * Every `initialize` opens a fresh Mcp-Session-Id, and on 2026-10-19 that was
+ * 1,300-1,960 connects/day (a Java health monitor at ~650/day plus the
+ * directory scanners), i.e. one KV put each — more than the free tier's
+ * 1,000 writes/day for the ONLY KV namespace, the one that also holds the
+ * x402 nonces. Only 2.3% of those sessions ever made a second call, so 97%
+ * of the writes were never read back.
+ *
+ * The Workers Cache API has no write quota, and a follow-up call from the same
+ * client lands in the same data center essentially always, so the session
+ * hint is written there first. KV is only the fallback where no Cache API
+ * exists (unit tests, exotic runtimes). A cross-colo miss degrades to the
+ * User-Agent heuristic — exactly what a sessionless client already gets.
+ * The cache key is a synthetic URL: only its string matters to the API.
+ */
+const SESSION_CLIENT_CACHE_ORIGIN = "https://session-client.toolsnap.internal/";
+
+function sessionClientCache(): Cache | null {
+  try {
+    const c = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+    return c ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function sessionClientCacheKey(sessionId: string): Request {
+  return new Request(`${SESSION_CLIENT_CACHE_ORIGIN}${encodeURIComponent(sessionId)}`, { method: "GET" });
+}
+
 export interface ClientSurface {
   name: string | null;
   version: string | null;
@@ -28,14 +60,35 @@ export async function persistSessionClient(
   sessionId: string,
   clientInfo: PersistedClientInfo
 ): Promise<void> {
-  if (!kv || !sessionId || !clientInfo.name) return;
-  await kv
-    .put(`${SESSION_CLIENT_KEY_PREFIX}${sessionId}`, JSON.stringify(clientInfo), {
+  if (!sessionId || !clientInfo.name) return;
+  const body = JSON.stringify({ name: clientInfo.name, version: clientInfo.version });
+
+  const cache = sessionClientCache();
+  if (cache) {
+    try {
+      await cache.put(
+        sessionClientCacheKey(sessionId),
+        new Response(body, {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": `public, max-age=${SESSION_CLIENT_TTL_SECONDS}`,
+          },
+        })
+      );
+      return;
+    } catch {
+      // Fall through to KV — same best-effort contract.
+    }
+  }
+
+  if (!kv) return;
+  try {
+    await kv.put(`${SESSION_CLIENT_KEY_PREFIX}${sessionId}`, body, {
       expirationTtl: SESSION_CLIENT_TTL_SECONDS,
-    })
-    .catch(() => {
-      // Analytics attribution must never break the request.
     });
+  } catch {
+    // Analytics attribution must never break the request.
+  }
 }
 
 /** Read back the clientInfo persisted for this session, if any. */
@@ -43,7 +96,19 @@ export async function readSessionClient(
   kv: KVNamespace | undefined,
   sessionId: string
 ): Promise<PersistedClientInfo | null> {
-  if (!kv || !sessionId) return null;
+  if (!sessionId) return null;
+
+  const cache = sessionClientCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(sessionClientCacheKey(sessionId));
+      if (hit) return (await hit.json()) as PersistedClientInfo;
+    } catch {
+      // Fall through to KV.
+    }
+  }
+
+  if (!kv) return null;
   try {
     const raw = await kv.get(`${SESSION_CLIENT_KEY_PREFIX}${sessionId}`);
     if (!raw) return null;

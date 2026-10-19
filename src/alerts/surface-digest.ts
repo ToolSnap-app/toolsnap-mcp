@@ -30,7 +30,10 @@ export async function checkSurfaceDigest(env: Env, now: Date = new Date()): Prom
   const digestKey = `digest:surface:${month}:w${weekOfMonth(now)}`;
   const sent = await env.X402_NONCES.get(digestKey);
   if (sent) return;
-  await env.X402_NONCES.put(digestKey, "1", { expirationTtl: KV_TTL_SEC });
+  await env.X402_NONCES.put(digestKey, "1", { expirationTtl: KV_TTL_SEC }).catch((err: unknown) => {
+    // Fase 25.14 — best-effort: worst case the digest repeats next Monday run.
+    console.warn("surface digest KV write failed:", err instanceof Error ? err.message : String(err));
+  });
 
   const d = await getWeeklySurfaceDigest(env.PREPAID_DB, now.getTime());
 

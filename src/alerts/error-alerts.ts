@@ -48,9 +48,15 @@ function truncatePayer(payer: string): string {
 /** Returns true (and marks the key) only the first time it's called within the TTL window. */
 async function shouldAlert(kv: KVNamespace | undefined, key: string, ttlSec: number): Promise<boolean> {
   if (!kv) return true; // no dedupe store available — alert anyway (best effort)
-  const existing = await kv.get(key);
-  if (existing) return false;
-  await kv.put(key, "1", { expirationTtl: ttlSec });
+  try {
+    const existing = await kv.get(key);
+    if (existing) return false;
+    await kv.put(key, "1", { expirationTtl: ttlSec });
+  } catch (err) {
+    // Fase 25.14 — a KV failure (daily write quota, transient error) must not
+    // throw out of a waitUntil; behave like the no-KV branch: alert anyway.
+    console.warn("alert throttle KV failed:", err instanceof Error ? err.message : String(err));
+  }
   return true;
 }
 

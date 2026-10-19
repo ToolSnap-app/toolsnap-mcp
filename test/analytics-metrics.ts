@@ -70,6 +70,9 @@ function fakeD1(rowsFor: (sql: string) => unknown[] = () => []): { db: D1Databas
         async all() {
           return { results: rowsFor(sql), success: true, meta: {} };
         },
+        async raw() {
+          return rowsFor(sql);
+        },
         async first() {
           return rowsFor(sql)[0] ?? null;
         },
@@ -223,7 +226,7 @@ console.log("\nventanas 24h / 7d / 30d");
 console.log("\nSQL de getDashboardData");
 {
   const { db, calls } = fakeD1();
-  const data = await getDashboardData(db, true);
+  const data = await getDashboardData(db, true, { fresh: true });
   const errorChart = calls.filter((c) => /LIMIT 20000/.test(c.sql) && /detail/.test(c.sql) && !/latency_ms/.test(c.sql));
   assert("exactly one raw-error query feeds the chart", errorChart.length === 1, `${errorChart.length}`);
   assert("...and it only selects payment_type = 'tool_error'", /payment_type = 'tool_error'/.test(errorChart[0].sql) && !/402_rejected/.test(errorChart[0].sql));
@@ -233,7 +236,7 @@ console.log("\nSQL de getDashboardData");
   assert("payload has the three windows", WINDOW_KEYS.every((k) => data.by_window[k] !== undefined) && Object.keys(data.by_window).length === 3);
   assert("payload carries retention 365/60", data.retention.events_days === ANALYTICS_RETENTION_DAYS && data.retention.connect_days === CONNECT_RETENTION_DAYS && ANALYTICS_RETENTION_DAYS === 365 && CONNECT_RETENTION_DAYS === 60);
   assert("legacy 30d fields still present", data.summary.calls_30d === 0 && Array.isArray(data.error_rate_by_tool) && Array.isArray(data.top_tools));
-  assert("no query reads the table without a ts bound except balances/directory_stats/MIN(ts)", calls.every((c) => /ts >= \?|ts < \?|FROM balances|FROM directory_stats|MIN\(ts\)/.test(c.sql)), calls.filter((c) => !/ts >= \?|ts < \?|FROM balances|FROM directory_stats|MIN\(ts\)/.test(c.sql)).map((c) => c.sql.slice(0, 60)).join(" | "));
+  assert("no query reads the table without a ts bound except balances/directory_stats/MIN(ts)", calls.every((c) => /ts >= \?|ts < \?|FROM balances|FROM directory_stats|MIN\(ts\)|MAX\(ts\)/.test(c.sql)), calls.filter((c) => !/ts >= \?|ts < \?|FROM balances|FROM directory_stats|MIN\(ts\)|MAX\(ts\)/.test(c.sql)).map((c) => c.sql.slice(0, 60)).join(" | "));
   const windowed = calls.filter((c) => /SUM\(ts >= \?\)/.test(c.sql));
   assert("windowed queries bind 7d then 24h then 30d in that order", windowed.length >= 4 && windowed.every((c) => c.args.length >= 3 && (c.args[c.args.length - 1] as number) < (c.args[0] as number) && (c.args[0] as number) < (c.args[1] as number)), `${windowed.length} windowed`);
 }

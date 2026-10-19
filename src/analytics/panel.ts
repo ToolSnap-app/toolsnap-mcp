@@ -101,6 +101,10 @@ export const PANEL_HTML = `<!DOCTYPE html>
   .pager-info { font-family: var(--font-mono); }
   .grid-wide { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 24px; }
   .retention-note { font-size: 12px; color: var(--muted); margin: -6px 0 14px; }
+  .health-ok { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 14px; color: var(--green); margin-bottom: 14px; font-size: 13px; }
+  .health-note { color: var(--muted); font-size: 12px; margin: -8px 0 14px; }
+  .error ul { margin: 6px 0 0 18px; }
+  .refresh-btn[disabled] { opacity: 0.5; cursor: default; }
   .chart-wrap { position: relative; }
   .chart-wrap text { font-family: var(--font-mono); }
   .chart-empty { padding: 56px 0; text-align: center; color: var(--muted); font-size: 12px; }
@@ -119,7 +123,7 @@ export const PANEL_HTML = `<!DOCTYPE html>
   <h1>toolsnap · analytics<span class="live-dot" title="live"></span></h1>
   <div style="display:flex;align-items:center;gap:12px">
     <span id="last-updated">loading…</span>
-    <button class="refresh-btn" onclick="load()">↻ refresh</button>
+    <button class="refresh-btn" onclick="load(true)">↻ refresh</button>
   </div>
 </header>
 <main>
@@ -385,6 +389,60 @@ function errorRateChart(items) {
   }).join('');
 }
 
+// Fase 25.17 — "Calls by surface" con dos tramos por cliente: llamadas reales
+// (azul) y de escaner/directorio (gris). El resto de tarjetas solo cuentan lo real.
+function surfaceBars(items) {
+  if (!items || items.length === 0) return '<div style="color:var(--muted);font-size:12px">no data yet</div>';
+  const byClient = new Map();
+  items.forEach(function (it) {
+    const a = byClient.get(it.client) || { client: it.client, real: 0, scanner: 0 };
+    if (it.probe) a.scanner += it.calls; else a.real += it.calls;
+    byClient.set(it.client, a);
+  });
+  const rows = Array.from(byClient.values()).sort(function (a, b) { return (b.real + b.scanner) - (a.real + a.scanner); });
+  const max = Math.max.apply(null, rows.map(function (r) { return r.real + r.scanner; }).concat([1]));
+  const pct = function (n) { return Math.round((n / max) * 100); };
+  const bars = rows.map(function (r) {
+    const count = fmt(r.real, 0) + (r.scanner > 0 ? ' <span style="color:var(--muted)">+' + fmt(r.scanner, 0) + '</span>' : '');
+    return '<div class="bar-row">'
+      + '<div class="bar-label" title="' + esc(r.client) + '">' + esc(r.client) + '</div>'
+      + '<div class="bar-track">'
+      + '<div class="bar-fill" style="width:' + pct(r.real) + '%;background:#2f81f7" title="real: ' + r.real + '"></div>'
+      + '<div class="bar-fill" style="width:' + pct(r.scanner) + '%;background:#484f58" title="scanner / directory probe: ' + r.scanner + '"></div>'
+      + '</div>'
+      + '<div class="bar-count" style="width:auto;min-width:44px;white-space:nowrap" title="real: ' + r.real + ' · scanner: ' + r.scanner + '">' + count + '</div>'
+      + '</div>';
+  }).join('');
+  return '<div class="retention-note" style="margin-top:-6px">blue = real calls · grey = scanners and directory probes</div>' + bars;
+}
+
+// Fase 25.17 — franja de estado sobre las pestanas: verde si no hay tools
+// rotas, el ultimo evento tiene menos de 3 h y ningun cron falla; si no, lista
+// lo que falla. Mismo findBrokenTools que el cron de salud (payload health).
+function healthStrip(h) {
+  if (!h) return '';
+  const SILENCE_MS = 3 * 60 * 60 * 1000;
+  const problems = [];
+  const notes = [];
+  (h.broken_tools || []).forEach(function (b) {
+    problems.push('tool failing for everyone: ' + b.tool + ' · ' + b.errors + '/' + b.total + ' real calls failed in 6h (' + b.pct + '%)' + (b.topDetail ? ' · ' + b.topDetail : ''));
+  });
+  if (h.last_event_ts == null) problems.push('no events recorded yet');
+  else if (Date.now() - h.last_event_ts > SILENCE_MS) problems.push('silence: last event ' + timeLabel(h.last_event_ts));
+  (h.crons || []).forEach(function (c) {
+    if (!c.last_error) return;
+    if (c.last_ok_ts != null && c.last_error_ts != null && c.last_error_ts < c.last_ok_ts) return;
+    const line = 'cron ' + c.name + ' failing: ' + c.last_error + (c.last_error_ts ? ' (' + timeLabel(c.last_error_ts) + ')' : '');
+    (c.muted ? notes : problems).push(line);
+  });
+  const noteHtml = notes.length ? '<div class="health-note">' + notes.map(esc).join(' · ') + '</div>' : '';
+  if (problems.length === 0) {
+    const okTitle = (h.crons || []).map(function (c) { return c.name + ': ' + (c.last_ok_ts ? timeLabel(c.last_ok_ts) : 'no mark yet'); }).join(' | ');
+    return '<div class="health-ok" title="' + esc('last ok (5-min crons refresh hourly): ' + okTitle) + '">all clear · last event ' + esc(timeLabel(h.last_event_ts)) + '</div>' + noteHtml;
+  }
+  return '<div class="error"><strong>Needs attention</strong><ul>' + problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></div>' + noteHtml;
+}
+
 // Fase 24.6 — directory/registry scraper coverage, last 7 days.
 function directoryCoverageTable(items) {
   if (!items || items.length === 0) return '<div style="color:var(--muted);font-size:12px">no probe traffic in 7d</div>';
@@ -394,7 +452,7 @@ function directoryCoverageTable(items) {
     <td>\${timeLabel(r.last_seen)}</td>
   </tr>\`).join('');
   return \`<table class="err-table">
-    <thead><tr><th>Directory</th><th>Hits · 7d</th><th>Last seen</th></tr></thead>
+    <thead><tr><th>Directory</th><th>Connects · 7d</th><th>Last seen</th></tr></thead>
     <tbody>\${rows}</tbody>
   </table>\`;
 }
@@ -464,7 +522,9 @@ function latencyByToolTable(items) {
 // Fase 24 — per-surface funnel table (connect -> call -> family-complete -> paid).
 function surfaceFunnelTable(surface) {
   const funnel = (surface && surface.funnel_by_client) || [];
-  const connects = new Map((surface && surface.connects_by_client || []).map(r => [r.client, r.connects]));
+  // Fase 25.17 — connects_by_client trae una fila por (cliente, probe): el embudo solo cuenta los reales.
+  const connects = new Map();
+  ((surface && surface.connects_by_client) || []).forEach(r => { if (!r.probe) connects.set(r.client, (connects.get(r.client) || 0) + r.connects); });
   const revenue = new Map((surface && surface.revenue_by_client || []).map(r => [r.client, r.revenue]));
   if (funnel.length === 0 && connects.size === 0) {
     return '<div style="color:var(--muted);font-size:12px">no connections yet</div>';
@@ -488,7 +548,7 @@ function surfaceFunnelTable(surface) {
     </tr>\`;
   }).join('');
   return \`<table class="err-table">
-    <thead><tr><th>Surface</th><th>Connects</th><th>≥1 call</th><th>≥3 same family</th><th>Paid</th><th>Revenue</th></tr></thead>
+    <thead><tr><th>Surface</th><th>Connects · 7d</th><th>≥1 call</th><th>≥3 same family</th><th>Paid</th><th>Revenue</th></tr></thead>
     <tbody>\${rows}</tbody>
   </table>\${pagerBar('funnel', total)}\`;
 }
@@ -507,16 +567,22 @@ function windowStats(d) {
   return w || { calls: 0, revenue: 0, unique_payers: 0, unique_anon_agents: 0, avg_latency_ms: 0, p50_latency_ms: 0, p95_latency_ms: 0, top_tools: [], payment_breakdown: [], calls_by_client: [], paywall_funnel: { hit_payers: 0, converted_payers: 0 }, error_rate_by_tool: [], latency_by_tool: [] };
 }
 
-// Fase 25.15 — con 90d/1y, los connects (y con ellos surface, sesiones y
-// agentes) solo cubren la retencion de connect, y los eventos empiezan en
-// retention.oldest_event_ts. Antes el panel lo callaba.
+// Fase 25.15 — con 90d/1y los eventos empiezan en retention.oldest_event_ts.
+// Fase 25.17 — los connects (y los directorios) cubren
+// retention.surface_days (7 d): D1 cobra una fila por connect leido.
 function retentionNotice(d) {
   const r = d.retention;
-  if (!r || state.days <= r.connect_days) return '';
-  const oldest = r.oldest_event_ts ? new Date(r.oldest_event_ts).toISOString().slice(0, 10) : null;
-  const parts = ['connects and surface cover ' + r.connect_days + 'd; per-window cards show 30d'];
-  if (oldest) parts.push('events since ' + oldest);
-  parts.push('events kept ' + r.events_days + 'd');
+  if (!r) return '';
+  const parts = [];
+  const surf = r.surface_days || r.connect_days;
+  if (state.days > surf) parts.push('connects and directory coverage cover ' + surf + 'd');
+  if (state.days > 30) {
+    const oldest = r.oldest_event_ts ? new Date(r.oldest_event_ts).toISOString().slice(0, 10) : null;
+    parts.push('per-window cards show 30d');
+    if (oldest) parts.push('events since ' + oldest);
+    parts.push('events kept ' + r.events_days + 'd');
+  }
+  if (parts.length === 0) return '';
   return '<div class="retention-note">' + esc(parts.join(' · ')) + '</div>';
 }
 
@@ -917,7 +983,7 @@ function render(d) {
     <div class="grid2">
       <div class="card">
         <h2>Calls by surface · \${wl}</h2>
-        <div class="bar-chart">\${barChart(w.calls_by_client, 'calls', 'client', '#2f81f7')}</div>
+        <div class="bar-chart">\${surfaceBars(w.calls_by_client)}</div>
       </div>
       <div class="card">
         <h2>Paywall → conversion · \${wl} (agents)</h2>
@@ -941,7 +1007,7 @@ function render(d) {
   const logsHtml = \`
     <div class="grid-wide">
       <div class="card">
-        <h2>Surface funnel · 30d — connect → ≥1 call → ≥3 same family → paid</h2>
+        <h2>Surface funnel · connects 7d, sessions 30d — connect → ≥1 call → ≥3 same family → paid</h2>
         \${surfaceFunnelTable(d.surface)}
       </div>
       <div class="card">
@@ -967,16 +1033,25 @@ function render(d) {
   \`;
 
   const html = \`
+    \${healthStrip(d.health)}
     <div style="margin-bottom:16px">\${tabsBar()}</div>
     \${state.tab === 'overview' ? overviewHtml : logsHtml}
   \`;
   document.getElementById('root').innerHTML = html;
 }
 
-async function load() {
+// Fase 25.17 — load(true) (el boton ↻) pide ?fresh=1 y salta la cache de 5 min
+// del servidor; la carga inicial, el toggle de internos y el refresco al volver
+// a la pestana usan la cache.
+async function load(force) {
   document.getElementById('last-updated').textContent = 'loading…';
+  const refreshBtn = document.querySelector('.refresh-btn');
+  if (refreshBtn) refreshBtn.disabled = true;
   try {
-    const res = await fetch('/analytics/data' + (state.internal ? '?include_internal=1' : ''));
+    const query = [];
+    if (state.internal) query.push('include_internal=1');
+    if (force === true) query.push('fresh=1');
+    const res = await fetch('/analytics/data' + (query.length ? '?' + query.join('&') : ''));
     if (!res.ok) {
       const msg = res.status === 401 ? 'Sesión de Cloudflare Access caducada: recarga la página para volver a entrar.'
         : res.status === 502 ? 'D1 no responde (error del servidor). Reintenta en un minuto.'
@@ -994,6 +1069,8 @@ async function load() {
     document.getElementById('last-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch(e) {
     document.getElementById('root').innerHTML = \`<div class="error">\${e.message}</div>\`;
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
   }
 }
 

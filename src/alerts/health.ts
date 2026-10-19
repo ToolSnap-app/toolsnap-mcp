@@ -227,18 +227,32 @@ export function findBrokenTools(rows: WindowRow[]): Array<{
   return broken.sort((a, b) => b.errors - a.errors);
 }
 
-export async function checkServerHealth(env: Env, now: Date = new Date()): Promise<void> {
-  const nowMs = now.getTime();
-
-  const [windowRows, silence] = await Promise.all([
-    env.PREPAID_DB.prepare(
+/**
+ * Fase 25.17 — las filas de la ventana de vigilancia (6 h, solo llamadas
+ * reales y no internas). UNA sola consulta compartida: el cron la pasa por
+ * findBrokenTools para alertar y el panel de /analytics por el mismo
+ * findBrokenTools para mostrar lo que ahora mismo esta roto. Si el SQL viviera
+ * en dos sitios, panel y pager acabarian discrepando sobre que es "una tool
+ * rota" (justo lo que Fase 25.15 arreglo para our_errors).
+ */
+export async function loadHealthWindow(db: D1Database, now: number): Promise<WindowRow[]> {
+  const res = await db
+    .prepare(
       `SELECT tool_name, payment_type, detail, client_name, client, payer
          FROM analytics_events
         WHERE ts >= ? AND payment_type <> 'connect' AND internal = 0
         LIMIT 5000`
     )
-      .bind(nowMs - BREAKAGE_WINDOW_MS)
-      .all<WindowRow>(),
+    .bind(now - BREAKAGE_WINDOW_MS)
+    .all<WindowRow>();
+  return res.results ?? [];
+}
+
+export async function checkServerHealth(env: Env, now: Date = new Date()): Promise<void> {
+  const nowMs = now.getTime();
+
+  const [windowRows, silence] = await Promise.all([
+    loadHealthWindow(env.PREPAID_DB, nowMs),
     env.PREPAID_DB.prepare(`SELECT count(*) AS n FROM analytics_events WHERE ts >= ?`)
       .bind(nowMs - SILENCE_WINDOW_MS)
       .first<{ n: number }>(),
@@ -271,7 +285,7 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
   }
 
   // --- 2. Tools rotas ------------------------------------------------------
-  for (const b of findBrokenTools(windowRows.results ?? [])) {
+  for (const b of findBrokenTools(windowRows)) {
     if (!(await shouldAlert(env.X402_NONCES, `health:broken:${b.tool}`, BREAKAGE_DEDUPE_SEC))) continue;
     await sendTelegram(
       env,

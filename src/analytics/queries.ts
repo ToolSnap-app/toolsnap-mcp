@@ -8,16 +8,29 @@ import { PROBE_CLIENTS, PROBE_NAME_PATTERNS, PROBE_UA_PATTERNS, isProbeClient } 
 import { classifyToolError, isPagedToolError, type ToolErrorClass } from "../alerts/error-classification.js";
 import { PAID_TYPES, PAID_TYPES_SQL, DEPOSIT_TYPES_SQL } from "./payment-types.js";
 import { ANALYTICS_RETENTION_DAYS, CONNECT_RETENTION_DAYS } from "./retention.js";
+import { findBrokenTools, loadHealthWindow } from "../alerts/health.js";
+import { readCronStatuses, type CronStatus } from "../alerts/cron-status.js";
 
 const MS_24H = 24 * 60 * 60 * 1000;
 const MS_7D = 7 * 24 * 60 * 60 * 1000;
 const MS_30D = 30 * 24 * 60 * 60 * 1000;
 const MS_365D = 365 * 24 * 60 * 60 * 1000;
 
-/** MCP directory/registry scrapers (see surface.ts PROBE_CLIENTS) — a fixed constant list, never user input. */
+/**
+ * MCP directory/registry scrapers (see surface.ts PROBE_CLIENTS) — a fixed
+ * constant list, never user input.
+ *
+ * Fase 25.17 — una cadena `client_name = 'a' OR client_name = 'b' ...` y NO
+ * `client_name IN ('a', 'b', ...)`. Equivalentes (mismo resultado, mismo NULL),
+ * pero D1 cobra cada comprobacion contra la lista IN como una fila leida
+ * mas: medido el 2026-10-20 sobre 5.253 eventos, con IN la consulta lee
+ * 10.682 filas y con la cadena OR 5.267 (el resto de variantes —LIKE sueltos,
+ * IN de 2 elementos, instr()— no duplicaban). Como este predicado esta en
+ * practicamente todas las consultas del panel, es la mitad de sus lecturas.
+ */
 const PROBE_CLIENTS_SQL = Array.from(PROBE_CLIENTS)
-  .map((c) => `'${c}'`)
-  .join(", ");
+  .map((c) => `client_name = '${c.replace(/'/g, "''")}'`)
+  .join(" OR ");
 
 /**
  * Fase 25.2 — predicate matching probe traffic by exact client_name OR by
@@ -25,7 +38,7 @@ const PROBE_CLIENTS_SQL = Array.from(PROBE_CLIENTS)
  * appear weekly, so the exact list alone always lags reality. Both constant
  * lists, never user input.
  */
-const IS_PROBE_SQL = `(client_name IN (${PROBE_CLIENTS_SQL}) OR ${[
+export const IS_PROBE_SQL = `(${PROBE_CLIENTS_SQL} OR ${[
   ...PROBE_NAME_PATTERNS.map((p) => `client_name LIKE '${p}'`),
   // Fase 25.9 — la convencion de crawler en el User-Agent crudo
   // ("MiBot/0.1 (+https://mibot.example/bot)"). Espejo exacto de la rama
@@ -39,7 +52,7 @@ const IS_PROBE_SQL = `(client_name IN (${PROBE_CLIENTS_SQL}) OR ${[
  * shared by the panel's internalFilter and the weekly digest so the two
  * report on the same notion of "real demand".
  */
-const NON_PROBE_SQL = ` AND NOT COALESCE(${IS_PROBE_SQL}, 0)`;
+export const NON_PROBE_SQL = ` AND NOT COALESCE(${IS_PROBE_SQL}, 0)`;
 
 /** tool_name -> family ids, precomputed once from the catalog (a tool can belong to >1 family). */
 const TOOL_FAMILIES: Record<string, string[]> = (() => {
@@ -101,6 +114,29 @@ export interface ErrorRateRow {
   error_pct: number;
 }
 
+/**
+ * Fase 25.17 — ventana de los datos que salen de eventos `connect`
+ * (connects_by_client y directory_coverage).
+ *
+ * Es de 7 d y no de 30 porque los connects son el 80 % de la tabla (27,6 k en
+ * 30 d, casi todos de escaneres) y D1 cobra una fila leida por cada connect de
+ * la ventana, sea cual sea el indice: no hay forma de contarlos mas barato sin
+ * una tabla de resumen. Medido el 2026-10-20: 7 d = 8,2 k connects, 14 d =
+ * 16,4 k (ya pasa de los 15 k por consulta que se quiere como techo), 30 d =
+ * 27,6 k. 7 d es ademas la ventana de "Directory coverage". El embudo por
+ * cliente mantiene sus sesiones a 30 d (salen de eventos no-connect, baratos).
+ * El panel lo dice en los titulos.
+ */
+export const SURFACE_WINDOW_DAYS = 7;
+
+/** Una barra de "Calls by surface": un cliente, partido en real vs escaner (probe). */
+export interface ClientCalls {
+  client: string;
+  calls: number;
+  /** true = trafico de directorio/escaner (IS_PROBE_SQL). Las demas tarjetas solo cuentan probe=false. */
+  probe: boolean;
+}
+
 export interface WindowStats {
   calls: number;
   revenue: number;
@@ -111,11 +147,26 @@ export interface WindowStats {
   p95_latency_ms: number;
   top_tools: Array<{ tool: string; calls: number }>;
   payment_breakdown: Array<{ type: string; calls: number }>;
-  calls_by_client: Array<{ client: string; calls: number }>;
+  calls_by_client: ClientCalls[];
   /** Agentes (no llamadas) que vieron el 402 en la ventana y convirtieron en 7 d, cualquier rail. */
   paywall_funnel: { hit_payers: number; converted_payers: number };
   error_rate_by_tool: ErrorRateRow[];
   latency_by_tool: Array<{ tool: string; calls: number; p50_latency_ms: number; p95_latency_ms: number }>;
+}
+
+/** Fase 25.17 — la franja de estado del panel: lo que esta roto AHORA, no lo que paso en 30 d. */
+export interface DashboardHealth {
+  /** findBrokenTools sobre la ventana de 6 h: EXACTAMENTE lo que el cron de salud pagina. */
+  broken_tools: ReturnType<typeof findBrokenTools>;
+  /** Ultimo evento de cualquier tipo (connect incluido): la senal de silencio del servidor. */
+  last_event_ts: number | null;
+  crons: CronStatus[];
+}
+
+/** Opciones de lectura del panel. `kv` es solo para el estado de los crons; `fresh` salta la cache de 5 min. */
+export interface DashboardOptions {
+  kv?: KVNamespace;
+  fresh?: boolean;
 }
 
 export interface DashboardData {
@@ -198,7 +249,9 @@ export interface DashboardData {
   /** Fase 25.15 — todas las tarjetas que siguen al selector, por ventana. Los campos de arriba son el corte de 30 d (compatibilidad con /reports). */
   by_window: Record<WindowKey, WindowStats>;
   /** Fase 25.15 — para que el panel diga que cubre de verdad. */
-  retention: { events_days: number; connect_days: number; oldest_event_ts: number | null };
+  retention: { events_days: number; connect_days: number; oldest_event_ts: number | null; surface_days: number };
+  /** Fase 25.17 — tools rotas ahora, silencio y estado de cada cron. */
+  health: DashboardHealth;
   /**
    * Fase 24.6 / 25.9 — errores partidos en tres clases con el MISMO
    * clasificador que decide que pagina en Telegram (error-classification.ts):
@@ -216,6 +269,9 @@ export interface DashboardData {
    * catalog but aren't real agent demand (see surface.ts PROBE_CLIENTS).
    * Excluded from every other metric above; reported here on its own as a
    * listing-health signal, not discarded as noise.
+   * Fase 25.17 — derived from the same rows as connects_by_client (probe
+   * connects in the last 7 d, internal excluded): `hits` are connects now,
+   * not every event.
    */
   directory_coverage: Array<{ client: string; hits: number; last_seen: number }>;
   /**
@@ -237,8 +293,9 @@ export interface DashboardData {
   paywall_funnel: { hit_payers: number; converted_payers: number };
   /** Fase 24 — which MCP client/surface is connecting, calling, paying. */
   surface: {
-    connects_by_client: Array<{ client: string; connects: number }>;
-    calls_by_client: Array<{ client: string; calls: number }>;
+    /** Fase 25.17 — connects de los ultimos SURFACE_WINDOW_DAYS (7) d; una fila por (cliente, probe). */
+    connects_by_client: Array<{ client: string; connects: number; probe: boolean }>;
+    calls_by_client: ClientCalls[];
     revenue_by_client: Array<{ client: string; revenue: number }>;
     /**
      * Per-surface funnel: connect -> >=1 tool call -> >=3 calls in the same
@@ -351,11 +408,11 @@ async function paywallConversionFunnel(
 /**
  * Fase 25.8 — cache en memoria del isolate para el payload del panel.
  *
- * Una sola carga de /analytics/data lanza 25 consultas (24 sobre
- * analytics_events/directory_stats y 1 sobre balances; ~115k filas leidas al
- * dia en total con el uso real, medido en Fase 25.15). El panel se refresca solo, hay dos consumidores mas
- * (/reports/analytics y la rutina de review) y un F5 repetido recalculaba
- * todo. 5 min de TTL absorben las rafagas (recargas seguidas, dos pestanas
+ * Una sola carga de /analytics/data lanza 21 consultas D1 (20 sobre
+ * analytics_events/directory_stats y 1 sobre balances) y ~87 k filas leidas
+ * (Fase 25.17: eran 25 consultas y ~338 k; ninguna pasa ya de 15 k). Hay dos
+ * consumidores mas (/reports/analytics y la rutina de review) y un F5
+ * repetido recalculaba todo. 5 min de TTL absorben las rafagas (recargas seguidas, dos pestanas
  * abiertas, el boton ↻ pulsado varias veces) sin que el dashboard se note
  * desactualizado: mide un servidor con ~150 llamadas al dia.
  *
@@ -369,14 +426,18 @@ const dashboardCache = new Map<string, { at: number; data: DashboardData }>();
 
 export async function getDashboardData(
   db: D1Database,
-  includeInternal = false
+  includeInternal = false,
+  opts: DashboardOptions = {}
 ): Promise<DashboardData> {
   const key = includeInternal ? "internal" : "external";
   const hit = dashboardCache.get(key);
-  if (hit && Date.now() - hit.at < DASHBOARD_TTL_MS) return hit.data;
-  const fresh = await computeDashboardData(db, includeInternal);
-  dashboardCache.set(key, { at: Date.now(), data: fresh });
-  return fresh;
+  // Fase 25.17 — `fresh` (el boton ↻ del panel, via /analytics/data?fresh=1)
+  // se salta la lectura pero SI escribe la cache: lo recien calculado sirve al
+  // siguiente que llegue dentro de los 5 min.
+  if (!opts.fresh && hit && Date.now() - hit.at < DASHBOARD_TTL_MS) return hit.data;
+  const data = await computeDashboardData(db, includeInternal, opts.kv);
+  dashboardCache.set(key, { at: Date.now(), data });
+  return data;
 }
 
 /** Fila cruda de tool_error de los ultimos 30 d: lo minimo para clasificar y cortar por ventana. */
@@ -485,6 +546,21 @@ function windowedList<K extends string>(
   return limit ? out.slice(0, limit) : out;
 }
 
+/**
+ * Fase 25.17 — "Calls by surface" de una ventana: una fila por (cliente, probe),
+ * con `probe` para que el panel pinte el tramo real y el de escaner. Misma
+ * forma de corte que windowedList (cada consulta lleva c30/c7/c1).
+ */
+function clientCallsList(
+  rows: readonly { client: string; probe: number | null; c30: number; c7: number; c1: number }[],
+  col: "c30" | "c7" | "c1"
+): ClientCalls[] {
+  return rows
+    .filter((r) => (r[col] ?? 0) > 0)
+    .map((r) => ({ client: r.client, calls: r[col], probe: !!r.probe }))
+    .sort((a, b) => b.calls - a.calls);
+}
+
 /** Fase 25.15 — clase de una fila de "Recent errors" (ver LoggedFailureClass). */
 export function loggedFailureClass(type: string, detail: string | null): LoggedFailureClass {
   if (type === "tool_error") return classifyToolError(detail);
@@ -492,9 +568,149 @@ export function loggedFailureClass(type: string, detail: string | null): LoggedF
   return "payment";
 }
 
+/** Redondeo a micro-USDC: la suma en JS no arrastra el ruido de coma flotante (0.1 + 0.2). */
+function roundUsdc(v: number): number {
+  return Math.round(v * 1e6) / 1e6;
+}
+
+/**
+ * Fase 25.17 — las cuatro series temporales, a partir de las filas
+ * `[ts, revenue_usdc, dep]` en orden de ts (una sola lectura, ver la consulta).
+ * Mismo resultado que las cuatro consultas GROUP BY que sustituye:
+ *  - calls cuenta todas las filas (los depositos tambien son llamadas del
+ *    log, como antes); revenue solo las que no son deposito/compra, y un dia
+ *    o cubo sin filas de esas simplemente no aparece (el panel rellena con 0).
+ *  - dia = floor(ts / 86400000); cubo de media hora = floor(ts / 1800000) * 1800000.
+ *  - las de media hora solo cubren los ultimos 7 d.
+ */
+export function rollupSeries(
+  rows: ReadonlyArray<readonly [number, number, number]>,
+  since7: number
+): Pick<DashboardData, "calls_by_day" | "revenue_by_day" | "calls_by_halfhour" | "revenue_by_halfhour"> {
+  const callsDay = new Map<number, number>();
+  const revDay = new Map<number, number>();
+  const callsHalf = new Map<number, number>();
+  const revHalf = new Map<number, number>();
+  for (const [ts, revenue, dep] of rows) {
+    const day = Math.floor(ts / 86400000);
+    callsDay.set(day, (callsDay.get(day) ?? 0) + 1);
+    const recent = ts >= since7;
+    const half = Math.floor(ts / 1800000) * 1800000;
+    if (recent) callsHalf.set(half, (callsHalf.get(half) ?? 0) + 1);
+    if (!dep) {
+      revDay.set(day, (revDay.get(day) ?? 0) + revenue);
+      if (recent) revHalf.set(half, (revHalf.get(half) ?? 0) + revenue);
+    }
+  }
+  const byKey = <V>(m: Map<number, V>): Array<[number, V]> => Array.from(m.entries()).sort((a, b) => a[0] - b[0]);
+  return {
+    calls_by_day: byKey(callsDay).map(([d, calls]) => ({ day: dayLabel(d * 86400000), calls })),
+    revenue_by_day: byKey(revDay).map(([d, revenue]) => ({ day: dayLabel(d * 86400000), revenue: roundUsdc(revenue) })),
+    calls_by_halfhour: byKey(callsHalf).map(([ts, calls]) => ({ ts, calls })),
+    revenue_by_halfhour: byKey(revHalf).map(([ts, revenue]) => ({ ts, revenue: roundUsdc(revenue) })),
+  };
+}
+
+/**
+ * Fase 25.17 — connects por (cliente, probe) y la cobertura de directorios, de
+ * las MISMAS filas `[client_name, probe, internal, ts]`. directory_coverage era
+ * una consulta aparte (21,5 k filas leidas) sobre los mismos eventos: ahora
+ * sale de aqui. Cuenta connects de escaner en 7 d, sin trafico interno (el
+ * toggle de internos no debe llenar "Directory coverage" con nuestros propios
+ * *-audit).
+ */
+export function rollupConnects(
+  rows: ReadonlyArray<readonly [string | null, number, number, number]>,
+  since7: number
+): { connects_by_client: DashboardData["surface"]["connects_by_client"]; directory_coverage: DashboardData["directory_coverage"] } {
+  const byClient = new Map<string, { client: string; probe: boolean; connects: number }>();
+  const coverage = new Map<string, { client: string; hits: number; last_seen: number }>();
+  for (const [clientName, probe, internal, ts] of rows) {
+    const client = clientName ?? "unknown";
+    const isProbe = !!probe;
+    const key = `${isProbe ? 1 : 0}|${client}`;
+    const a = byClient.get(key) ?? { client, probe: isProbe, connects: 0 };
+    a.connects += 1;
+    byClient.set(key, a);
+    if (isProbe && !internal && ts >= since7) {
+      const c = coverage.get(client) ?? { client, hits: 0, last_seen: 0 };
+      c.hits += 1;
+      if (ts > c.last_seen) c.last_seen = ts;
+      coverage.set(client, c);
+    }
+  }
+  return {
+    connects_by_client: Array.from(byClient.values()).sort((a, b) => b.connects - a.connects),
+    directory_coverage: Array.from(coverage.values()).sort((a, b) => b.last_seen - a.last_seen),
+  };
+}
+
+type AgentRow = readonly [payer: string, sid: string | null, ts: number];
+
+/**
+ * Fase 25.17 — identidad canonica de cada payer, como la calculaban las CTE
+ * `anchors`/`canon` de SQL: el ancla de una sesion es el MIN(payer) de la
+ * sesion; cada payer toma el menor ancla de sus sesiones (o el mismo si no
+ * tiene sesion). Comparacion de cadenas igual que SQLite (binaria; los payers
+ * son ASCII: wallets, anon:<hash>, acct:...).
+ */
+export function canonicalAgents(rows: readonly AgentRow[]): Map<string, string> {
+  const anchor = new Map<string, string>();
+  for (const [payer, sid] of rows) {
+    if (sid === null) continue;
+    const a = anchor.get(sid);
+    if (a === undefined || payer < a) anchor.set(sid, payer);
+  }
+  const best = new Map<string, string>();
+  for (const [payer, sid] of rows) {
+    if (sid === null) continue;
+    const a = anchor.get(sid) as string;
+    const b = best.get(payer);
+    if (b === undefined || a < b) best.set(payer, a);
+  }
+  const canon = new Map<string, string>();
+  for (const [payer] of rows) if (!canon.has(payer)) canon.set(payer, best.get(payer) ?? payer);
+  return canon;
+}
+
+/**
+ * Agentes anonimos distintos por ventana (30 d / 7 d / 24 h) y agentes que
+ * vuelven (vistos esta semana y la anterior, mapa de identidades sobre 14 d).
+ * `rows` son los eventos no-connect de 30 d con payer != 'anon'.
+ */
+export function rollupAgents(
+  rows: readonly AgentRow[],
+  since: { d14: number; d7: number; h24: number }
+): { anon: { c30: number; c7: number; c1: number }; returning: number } {
+  const anonRows = rows.filter(([payer]) => payer.toLowerCase().startsWith("anon:"));
+  const anonCanon = canonicalAgents(anonRows);
+  const a30 = new Set<string>();
+  const a7 = new Set<string>();
+  const a1 = new Set<string>();
+  for (const [payer, , ts] of anonRows) {
+    const c = anonCanon.get(payer) as string;
+    a30.add(c);
+    if (ts >= since.d7) a7.add(c);
+    if (ts >= since.h24) a1.add(c);
+  }
+  const recent = rows.filter(([, , ts]) => ts >= since.d14);
+  const canon = canonicalAgents(recent);
+  const thisWeek = new Set<string>();
+  const lastWeek = new Set<string>();
+  for (const [payer, , ts] of recent) {
+    const c = canon.get(payer) as string;
+    if (ts >= since.d7) thisWeek.add(c);
+    else lastWeek.add(c);
+  }
+  let returning = 0;
+  for (const c of thisWeek) if (lastWeek.has(c)) returning += 1;
+  return { anon: { c30: a30.size, c7: a7.size, c1: a1.size }, returning };
+}
+
 async function computeDashboardData(
   db: D1Database,
-  includeInternal: boolean
+  includeInternal: boolean,
+  kv?: KVNamespace
 ): Promise<DashboardData> {
   const now = Date.now();
   const since30 = now - MS_30D;
@@ -512,6 +728,10 @@ async function computeDashboardData(
   const internalFilter = includeInternal
     ? ""
     : ` AND internal = 0${NON_PROBE_SQL}`;
+  // Fase 25.17 — las dos consultas que REPARTEN probe vs real (connects y
+  // calls por cliente) no excluyen los escaners: devuelven `probe` por fila. El
+  // toggle de "trafico interno" sigue mandando sobre internal.
+  const internalOnlyFilter = includeInternal ? "" : " AND internal = 0";
 
   const [
     summary,
@@ -520,25 +740,22 @@ async function computeDashboardData(
     creditPurchasesSummary,
     creditPurchases,
     creditLiability,
-    callsSeries,
-    revSeries,
-    callsHalfhour,
-    revenueHalfhour,
-    anonAgents,
-    returningAgents,
+    seriesRows,
+    agentRows,
     recentErrors,
-    totalByTool,
     errorRows,
     latencyRows,
-    connectsByClient,
+    connectRows,
     callsByClient,
     revenueByClient,
     sessionRows,
-    directoryCoverage,
     directoryStatsLatest,
     smitheryUseCountSeries,
     paywallFunnels,
     oldestEvent,
+    lastEvent,
+    healthWindow,
+    cronStatuses,
   ] = await Promise.all([
       // Fase 25.15 — tres cortes sobre las mismas filas (ver WindowKey).
       // payers = identificados (wallet/cuenta); los anonimos van aparte.
@@ -633,130 +850,52 @@ async function computeDashboardData(
         )
         .first<{ outstanding: number; lifetime_purchased: number; lifetime_consumed: number; accounts: number }>(),
 
-      // Calls per day — aggregate in JS from raw ts+count bucketed rows.
-      // Up to 365 days of daily granularity; the panel re-buckets client-side
-      // for wider timeframes so the timeframe selector never re-fetches.
+      // Fase 25.17 — UNA consulta para las cuatro series temporales (calls y
+      // revenue por dia a 365 d, calls y revenue por media hora a 7 d). Antes
+      // eran cuatro: dos GROUP BY (ts / 86400000) de 41 k filas cada uno, que
+      // pagaban el temp B-tree del GROUP BY (cada fila entra y sale: x2) mas el
+      // salto a la tabla por `client` (el filtro de escaneres), y dos de media
+      // hora. Ahora las filas salen en orden de ts por el indice cubriente
+      // idx_ae_noconnect_cover (ts, internal, client_name, client, revenue_usdc,
+      // payment_type: todo lo que toca esta consulta), sin sorter y sin tocar la
+      // tabla: ~1 fila leida por evento no-connect, ~14,7 k hoy. Los cubos se
+      // hacen en JS (ver rollupSeries). `.raw()` devuelve arrays: ~20 bytes por
+      // fila en vez de ~70.
       db
         .prepare(
-          `SELECT ts, count(*) AS calls
+          `SELECT ts, revenue_usdc, payment_type IN (${DEPOSIT_TYPES_SQL}) AS dep
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY (ts / 86400000)
            ORDER BY ts ASC`
         )
         .bind(since365)
-        .all<{ ts: number; calls: number }>(),
+        .raw<[number, number, number]>(),
 
-      // Fase 24.7 — usage revenue only; deposit/purchase cash-in is reported
-      // separately via `credits` (see summary.revenue_30d comment above).
-      db
-        .prepare(
-          `SELECT ts, COALESCE(sum(revenue_usdc), 0) AS revenue
-           FROM analytics_events
-           WHERE ts >= ? AND payment_type != 'connect' AND payment_type NOT IN (${DEPOSIT_TYPES_SQL})${internalFilter}
-           GROUP BY (ts / 86400000)
-           ORDER BY ts ASC`
-        )
-        .bind(since365)
-        .all<{ ts: number; revenue: number }>(),
-
-      // Fase 24.7 — 30-minute buckets over 7 days for the intraday chart
-      // views (TradingView-style 30m/1h/4h); the panel re-buckets client-side
-      // from this one fetch, same pattern as the daily series above.
-      db
-        .prepare(
-          `SELECT (ts / 1800000) * 1800000 AS bucket, count(*) AS calls
-           FROM analytics_events
-           WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY (ts / 1800000)
-           ORDER BY bucket ASC`
-        )
-        .bind(since7)
-        .all<{ bucket: number; calls: number }>(),
-
-      db
-        .prepare(
-          `SELECT (ts / 1800000) * 1800000 AS bucket, COALESCE(sum(revenue_usdc), 0) AS revenue
-           FROM analytics_events
-           WHERE ts >= ? AND payment_type != 'connect' AND payment_type NOT IN (${DEPOSIT_TYPES_SQL})${internalFilter}
-           GROUP BY (ts / 1800000)
-           ORDER BY bucket ASC`
-        )
-        .bind(since7)
-        .all<{ bucket: number; revenue: number }>(),
-
-      // Fase 25.1 (fixed 2026-07-18) — distinct anonymous agents. Two
-      // opposing distortions to correct at once: (a) the Anthropic egress
-      // rotates IPs *within one MCP session*, so one agent logs several
-      // anon:<hash> payers (session 477838cd…, 2026-07-17: one Claude agent,
-      // 4 payers); (b) one agent opens MANY sessions (a scanner opened ~40
-      // in a minute), so grouping by session — the first 25.1 attempt —
-      // counted sessions, not agents, and reported 1.4k where there were 5.
-      // Fix: two-step canonicalization. Each session gets an anchor
+      // Fase 25.1 (fixed 2026-07-18) — distinct anonymous agents, and Fase
+      // 24.7 retention (agents seen both this week and last). Two opposing
+      // distortions to correct at once: (a) the Anthropic egress rotates IPs
+      // *within one MCP session*, so one agent logs several anon:<hash>
+      // payers (session 477838cd…, 2026-07-17: one Claude agent, 4 payers);
+      // (b) one agent opens MANY sessions (a scanner opened ~40 in a minute),
+      // so grouping by session — the first 25.1 attempt — counted sessions,
+      // not agents, and reported 1.4k where there were 5. Fix: two-step
+      // canonicalization (see canonicalAgents): each session gets an anchor
       // (MIN(payer) within it); each payer canonicalizes to the smallest
-      // anchor across its sessions. A payer with N sessions stays 1 agent;
-      // payers sharing a session collapse into 1. Sessionless rows fall back
-      // to the raw payer.
-      // Fase 25.15 — el mapa de identidades se construye sobre 30 d y cada
-      // ventana cuenta los agentes canonicos con algun evento en ella.
+      // anchor across its sessions. Sessionless rows fall back to the raw payer.
+      //
+      // Fase 25.17 — ese calculo vivia en dos CTE de SQL (anonAgents y
+      // returningAgents: 32 k y 9 k filas leidas) que re-evaluaban la misma
+      // CTE tres veces cada una. Ahora es UNA lectura de (payer, sesion, ts) de
+      // 30 d (~5 k filas) y la canonicalizacion se hace en JS, con el mismo
+      // resultado (verificado contra D1 real: c30/c7/c1 y n identicos).
       db
         .prepare(
-          `WITH ev AS (
-             SELECT payer, NULLIF(session_id, '') AS sid, ts
-             FROM analytics_events
-             WHERE ts >= ? AND payment_type != 'connect' AND payer LIKE 'anon:%'${internalFilter}
-           ),
-           anchors AS (
-             SELECT sid, MIN(payer) AS anchor FROM ev WHERE sid IS NOT NULL GROUP BY sid
-           ),
-           canon AS (
-             SELECT p.payer, COALESCE(MIN(a.anchor), p.payer) AS canon
-             FROM (SELECT DISTINCT payer, sid FROM ev) p
-             LEFT JOIN anchors a ON p.sid = a.sid
-             GROUP BY p.payer
-           )
-           SELECT count(DISTINCT c.canon) AS c30,
-                  count(DISTINCT CASE WHEN ev.ts >= ? THEN c.canon END) AS c7,
-                  count(DISTINCT CASE WHEN ev.ts >= ? THEN c.canon END) AS c1
-           FROM ev JOIN canon c ON ev.payer = c.payer`
+          `SELECT payer, NULLIF(session_id, '') AS sid, ts
+           FROM analytics_events
+           WHERE ts >= ? AND payment_type != 'connect' AND payer != 'anon'${internalFilter}`
         )
-        .bind(since30, since7, since1)
-        .first<{ c30: number; c7: number; c1: number }>(),
-
-      // Fase 24.7 — retention: distinct payers (excluding the legacy 'anon'
-      // literal; anon:<hash> pseudonyms count) seen both this week and last.
-      // Fase 25.1 (fixed 2026-07-18) — the first 25.1 attempt grouped by
-      // session on each side of the INTERSECT, which made agent identities
-      // session-local and never comparable across weeks (returning dropped
-      // to 0). Fix: compute the same two-step canonicalization as anonAgents
-      // over the FULL 14-day window (so both weeks share one identity map),
-      // then intersect the per-week canonical-agent sets. Still not perfect:
-      // an agent whose anchor IP hash changes between weeks with no shared
-      // session won't match — acceptable residual for a pseudonymous metric.
-      db
-        .prepare(
-          `WITH ev AS (
-             SELECT payer, NULLIF(session_id, '') AS sid, ts
-             FROM analytics_events
-             WHERE ts >= ? AND payment_type != 'connect' AND payer != 'anon'${internalFilter}
-           ),
-           anchors AS (
-             SELECT sid, MIN(payer) AS anchor FROM ev WHERE sid IS NOT NULL GROUP BY sid
-           ),
-           canon AS (
-             SELECT p.payer, COALESCE(MIN(a.anchor), p.payer) AS canon
-             FROM (SELECT DISTINCT payer, sid FROM ev) p
-             LEFT JOIN anchors a ON p.sid = a.sid
-             GROUP BY p.payer
-           )
-           SELECT count(*) AS n FROM (
-             SELECT DISTINCT c.canon FROM ev JOIN canon c ON ev.payer = c.payer WHERE ev.ts >= ?
-             INTERSECT
-             SELECT DISTINCT c.canon FROM ev JOIN canon c ON ev.payer = c.payer WHERE ev.ts < ?
-           )`
-        )
-        .bind(now - 2 * MS_7D, since7, since7)
-        .first<{ n: number }>(),
+        .bind(since30)
+        .raw<[string, string | null, number]>(),
 
       // Fase 25.15 — el log de fallos: sin el handshake 402 sin wallet (es
       // Payment mix), con client_name ademas del UA crudo.
@@ -779,25 +918,6 @@ async function computeDashboardData(
           client: string | null;
           detail: string | null;
         }>(),
-
-      // total calls per tool (error-rate denominator) — kept as a separate
-      // lightweight query so errorRows below only has to fetch error rows,
-      // not a full table scan.
-      db
-        .prepare(
-          // Fase 25.8 — es el denominador del error_pct por tool, y el
-          // numerador (errorRows) son solo tool_error, jamas un connect. Los
-          // connect ademas van todos con tool_name = 'initialize', un bucket
-          // propio que nadie consulta aqui: filtrarlos no altera ningun
-          // porcentaje y permite usar idx_ae_noconnect_ts en vez de escanear
-          // la tabla entera.
-          `SELECT tool_name AS tool, count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
-           FROM analytics_events
-           WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY tool_name`
-        )
-        .bind(since7, since1, since30)
-        .all<{ tool: string; c30: number; c7: number; c1: number }>(),
 
       // Fase 24.6 / 25.15 — raw tool_error rows so isPagedToolError (shared
       // with error-alerts.ts) classifies each one in JS instead of
@@ -833,30 +953,40 @@ async function computeDashboardData(
         .bind(since30)
         .all<{ ts: number; tool: string; latency_ms: number }>(),
 
-      // NOTE: GROUP BY the raw COALESCE(...) expression, not its output alias
-      // ("client") — grouping by the alias mis-collapses rows in D1's SQLite
-      // (verified: all rows landed in one bucket keyed by the first row's
-      // value). Grouping by the full expression is correct and reproducible.
+      // Fase 25.17 — connects por cliente, con `probe` por fila en vez de
+      // excluir los escaners. Se agrupa en JS (rollupConnects), no con GROUP BY:
+      // el GROUP BY de SQLite metia cada connect en un temp B-tree (x2 filas
+      // leidas) y la ventana de 30 d son 27,6 k connects. Ahora el indice
+      // cubriente idx_ae_pay_int_ts_cn_ua (payment_type, internal, ts,
+      // client_name, client) los entrega en orden sin tocar la tabla: 1 fila
+      // por connect de la ventana de SURFACE_WINDOW_DAYS. LIMIT de seguridad
+      // ante una avalancha de un escaner (hoy ~13 k).
       db
         .prepare(
-          `SELECT COALESCE(client_name, 'unknown') AS client, count(*) AS connects
+          `SELECT client_name, COALESCE(${IS_PROBE_SQL}, 0) AS probe, internal, ts
            FROM analytics_events
-           WHERE ts >= ? AND payment_type = 'connect'${internalFilter}
-           GROUP BY COALESCE(client_name, 'unknown')
-           ORDER BY connects DESC`
+           WHERE ts >= ? AND payment_type = 'connect'${internalOnlyFilter}
+           LIMIT 50000`
         )
-        .bind(since30)
-        .all<{ client: string; connects: number }>(),
+        .bind(since7)
+        .raw<[string | null, number, number, number]>(),
 
+      // NOTE: GROUP BY the raw expressions, not their output aliases — grouping
+      // by the alias mis-collapses rows in D1's SQLite (verified: all rows
+      // landed in one bucket keyed by the first row's value). Fase 25.17: sin
+      // NON_PROBE_SQL en el WHERE; `probe` sale como columna y como clave de
+      // grupo, con lo que un cliente puede dar dos filas (su trafico real y el
+      // que casa un patron de escaner por User-Agent).
       db
         .prepare(
-          `SELECT COALESCE(client_name, 'unknown') AS client, count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
+          `SELECT COALESCE(client_name, 'unknown') AS client, COALESCE(${IS_PROBE_SQL}, 0) AS probe,
+                  count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
            FROM analytics_events
-           WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
-           GROUP BY COALESCE(client_name, 'unknown')`
+           WHERE ts >= ? AND payment_type != 'connect'${internalOnlyFilter}
+           GROUP BY COALESCE(client_name, 'unknown'), COALESCE(${IS_PROBE_SQL}, 0)`
         )
         .bind(since7, since1, since30)
-        .all<{ client: string; c30: number; c7: number; c1: number }>(),
+        .all<{ client: string; probe: number; c30: number; c7: number; c1: number }>(),
 
       db
         .prepare(
@@ -890,21 +1020,6 @@ async function computeDashboardData(
         .bind(since30)
         .all<{ session_id: string; client: string; tool: string; type: string; revenue: number }>(),
 
-      // Fase 24.6 — directory coverage: the inverse of internalFilter's probe
-      // exclusion above. Which known MCP directories/scrapers hit us in the
-      // last 7 days, and when last — a listing-health signal, reported on
-      // its own rather than folded into (or discarded from) demand metrics.
-      db
-        .prepare(
-          `SELECT COALESCE(client_name, 'unknown') AS client, count(*) AS hits, MAX(ts) AS last_seen
-           FROM analytics_events
-           WHERE ts >= ? AND internal = 0 AND ${IS_PROBE_SQL}
-           GROUP BY COALESCE(client_name, 'unknown')
-           ORDER BY last_seen DESC`
-        )
-        .bind(since7)
-        .all<{ client: string; hits: number; last_seen: number }>(),
-
       // Fase 25.3 — most recent snapshot per directory source (independent of
       // internalFilter/probe exclusion: this table only ever holds our own
       // scheduled snapshots, never caller-driven rows).
@@ -931,8 +1046,17 @@ async function computeDashboardData(
 
       // Fase 25.15 — desde cuando hay datos (idx_ae_ts: una fila leida).
       db.prepare(`SELECT MIN(ts) AS ts FROM analytics_events`).first<{ ts: number | null }>(),
+
+      // Fase 25.17 — salud. Ultimo evento de cualquier tipo (idx_ae_ts: una fila).
+      db.prepare(`SELECT MAX(ts) AS ts FROM analytics_events`).first<{ ts: number | null }>(),
+      // Misma consulta y misma ventana (6 h) que el cron de salud.
+      loadHealthWindow(db, now),
+      readCronStatuses(kv),
     ]);
 
+  const series = rollupSeries(seriesRows, since7);
+  const agents = rollupAgents(agentRows, { d14: now - 2 * MS_7D, d7: since7, h24: since1 });
+  const connectStats = rollupConnects(connectRows, since7);
   const s = summary ?? { c30: 0, c7: 0, c1: 0, r30: 0, r7: 0, r1: 0, p30: 0, p7: 0, p1: 0 };
   const liability = creditLiability ?? { outstanding: 0, lifetime_purchased: 0, lifetime_consumed: 0, accounts: 0 };
 
@@ -986,7 +1110,8 @@ async function computeDashboardData(
   const toolRows = topTools.results ?? [];
   const payRows = payBreakdown.results ?? [];
   const clientRows = callsByClient.results ?? [];
-  const totalRows = totalByTool.results ?? [];
+  // topTools y el denominador del error_pct eran la MISMA consulta, ejecutada dos veces (14 k filas cada vez).
+  const totalRows = toolRows;
   const errRows = errorRows.results ?? [];
   const latRows = latencyRows.results ?? [];
   const funnelByWindow: Record<WindowKey, { hit_payers: number; converted_payers: number }> = {
@@ -995,7 +1120,7 @@ async function computeDashboardData(
     h24: paywallFunnels[2],
   };
   const sumCol = { d30: { c: s.c30, r: s.r30, p: s.p30 }, d7: { c: s.c7, r: s.r7, p: s.p7 }, h24: { c: s.c1, r: s.r1, p: s.p1 } };
-  const anonCol = { d30: anonAgents?.c30 ?? 0, d7: anonAgents?.c7 ?? 0, h24: anonAgents?.c1 ?? 0 };
+  const anonCol = { d30: agents.anon.c30, d7: agents.anon.c7, h24: agents.anon.c1 };
   const byWindow = {} as Record<WindowKey, WindowStats>;
   for (const w of WINDOW_KEYS) {
     const col = WINDOW_COL[w];
@@ -1009,7 +1134,7 @@ async function computeDashboardData(
       ...rollupLatency(latRows, since),
       top_tools: windowedList(toolRows, "tool", col, 10),
       payment_breakdown: windowedList(payRows, "type", col),
-      calls_by_client: windowedList(clientRows, "client", col),
+      calls_by_client: clientCallsList(clientRows, col),
       paywall_funnel: funnelByWindow[w],
       error_rate_by_tool: rollupErrorRates(errRows, totals, since),
     };
@@ -1022,21 +1147,12 @@ async function computeDashboardData(
       revenue_30d: d30.revenue,
       unique_payers_30d: d30.unique_payers,
       unique_anon_agents_30d: d30.unique_anon_agents,
-      returning_agents_7d: returningAgents?.n ?? 0,
+      returning_agents_7d: agents.returning,
       avg_latency_ms: d30.avg_latency_ms,
       p50_latency_ms: d30.p50_latency_ms,
       p95_latency_ms: d30.p95_latency_ms,
     },
-    calls_by_day: (callsSeries.results ?? []).map((r) => ({
-      day: dayLabel(r.ts),
-      calls: r.calls,
-    })),
-    revenue_by_day: (revSeries.results ?? []).map((r) => ({
-      day: dayLabel(r.ts),
-      revenue: r.revenue,
-    })),
-    calls_by_halfhour: (callsHalfhour.results ?? []).map((r) => ({ ts: r.bucket, calls: r.calls })),
-    revenue_by_halfhour: (revenueHalfhour.results ?? []).map((r) => ({ ts: r.bucket, revenue: r.revenue })),
+    ...series,
     top_tools: d30.top_tools,
     payment_breakdown: d30.payment_breakdown,
     credits: {
@@ -1060,7 +1176,7 @@ async function computeDashboardData(
     })),
     error_rate_by_tool: d30.error_rate_by_tool,
     latency_by_tool: d30.latency_by_tool,
-    directory_coverage: directoryCoverage.results ?? [],
+    directory_coverage: connectStats.directory_coverage,
     directory_stats: directoryStatsLatest.results ?? [],
     smithery_use_count_series: (smitheryUseCountSeries.results ?? []).map((r) => ({
       day: dayLabel(r.ts),
@@ -1068,7 +1184,7 @@ async function computeDashboardData(
     })),
     paywall_funnel: d30.paywall_funnel,
     surface: {
-      connects_by_client: connectsByClient.results ?? [],
+      connects_by_client: connectStats.connects_by_client,
       calls_by_client: d30.calls_by_client,
       revenue_by_client: revenueByClient.results ?? [],
       funnel_by_client: Array.from(funnelByClient.entries()).map(([client, f]) => ({ client, ...f })),
@@ -1078,6 +1194,12 @@ async function computeDashboardData(
       events_days: ANALYTICS_RETENTION_DAYS,
       connect_days: CONNECT_RETENTION_DAYS,
       oldest_event_ts: oldestEvent?.ts ?? null,
+      surface_days: SURFACE_WINDOW_DAYS,
+    },
+    health: {
+      broken_tools: findBrokenTools(healthWindow),
+      last_event_ts: lastEvent?.ts ?? null,
+      crons: cronStatuses,
     },
   };
 }

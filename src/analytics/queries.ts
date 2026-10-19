@@ -585,7 +585,9 @@ function roundUsdc(v: number): number {
  */
 export function rollupSeries(
   rows: ReadonlyArray<readonly [number, number, number]>,
-  since7: number
+  since7: number,
+  /** Fase B2 — dias anteriores a `rows`, ya agregados: [day 'YYYY-MM-DD', calls, revenue] (analytics_daily). */
+  summary: ReadonlyArray<readonly [string, number, number]> = []
 ): Pick<DashboardData, "calls_by_day" | "revenue_by_day" | "calls_by_halfhour" | "revenue_by_halfhour"> {
   const callsDay = new Map<number, number>();
   const revDay = new Map<number, number>();
@@ -601,6 +603,11 @@ export function rollupSeries(
       revDay.set(day, (revDay.get(day) ?? 0) + revenue);
       if (recent) revHalf.set(half, (revHalf.get(half) ?? 0) + revenue);
     }
+  }
+  for (const [label, calls, revenue] of summary) {
+    const day = Date.parse(label) / 86400000;
+    callsDay.set(day, (callsDay.get(day) ?? 0) + calls);
+    revDay.set(day, (revDay.get(day) ?? 0) + revenue);
   }
   const byKey = <V>(m: Map<number, V>): Array<[number, V]> => Array.from(m.entries()).sort((a, b) => a[0] - b[0]);
   return {
@@ -717,6 +724,8 @@ async function computeDashboardData(
   const since365 = now - MS_365D;
   const since7 = now - MS_7D;
   const since1 = now - MS_24H;
+  /** Fase B2 — las series crudas empiezan en el inicio del dia UTC de since7; antes, analytics_daily. */
+  const rawSeriesFrom = Math.floor(since7 / 86400000) * 86400000;
   /** Orden fijo de las ventanas en cada consulta con tres cortes: 30 d (la propia WHERE), 7 d, 24 h. */
   const WINDOW_SINCE: Record<WindowKey, number> = { d30: since30, d7: since7, h24: since1 };
   const WINDOW_COL: Record<WindowKey, "c30" | "c7" | "c1"> = { d30: "c30", d7: "c7", h24: "c1" };
@@ -741,6 +750,7 @@ async function computeDashboardData(
     creditPurchases,
     creditLiability,
     seriesRows,
+    seriesDailyRows,
     agentRows,
     recentErrors,
     errorRows,
@@ -850,17 +860,14 @@ async function computeDashboardData(
         )
         .first<{ outstanding: number; lifetime_purchased: number; lifetime_consumed: number; accounts: number }>(),
 
-      // Fase 25.17 — UNA consulta para las cuatro series temporales (calls y
-      // revenue por dia a 365 d, calls y revenue por media hora a 7 d). Antes
-      // eran cuatro: dos GROUP BY (ts / 86400000) de 41 k filas cada uno, que
-      // pagaban el temp B-tree del GROUP BY (cada fila entra y sale: x2) mas el
-      // salto a la tabla por `client` (el filtro de escaneres), y dos de media
-      // hora. Ahora las filas salen en orden de ts por el indice cubriente
-      // idx_ae_noconnect_cover (ts, internal, client_name, client, revenue_usdc,
-      // payment_type: todo lo que toca esta consulta), sin sorter y sin tocar la
-      // tabla: ~1 fila leida por evento no-connect, ~14,7 k hoy. Los cubos se
-      // hacen en JS (ver rollupSeries). `.raw()` devuelve arrays: ~20 bytes por
-      // fila en vez de ~70.
+      // Fase 25.17 — UNA consulta para las cuatro series temporales; Fase B2 —
+      // ya no a 365 d. Las filas crudas (en orden de ts por el indice cubriente
+      // idx_ae_noconnect_cover, sin sorter ni salto a la tabla) cubren desde el
+      // inicio del dia UTC de since7 (<= 8 dias, ~2,3 k filas): las dos series de
+      // media hora (7 d) y los ultimos dias completos de calls/revenue por dia,
+      // con el dia en curso siempre al dia. El resto de calls_by_day /
+      // revenue_by_day sale de analytics_daily (query de abajo). Los cubos se
+      // hacen en JS (rollupSeries). `.raw()` devuelve arrays.
       db
         .prepare(
           `SELECT ts, revenue_usdc, payment_type IN (${DEPOSIT_TYPES_SQL}) AS dep
@@ -868,8 +875,21 @@ async function computeDashboardData(
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
            ORDER BY ts ASC`
         )
-        .bind(since365)
+        .bind(rawSeriesFrom)
         .raw<[number, number, number]>(),
+
+      // Fase B2 — dias de 365 d hasta el inicio de las filas crudas, del resumen
+      // diario (rellena el cron: src/analytics/daily.ts). Como mucho 4 filas por
+      // dia (internal x probe); el toggle decide cuales: por defecto solo
+      // internal = 0 y probe = 0, igual que internalFilter.
+      db
+        .prepare(
+          `SELECT day, calls, revenue_usdc
+           FROM analytics_daily
+           WHERE day >= ? AND day < ?${includeInternal ? "" : " AND internal = 0 AND probe = 0"}`
+        )
+        .bind(dayLabel(since365), dayLabel(rawSeriesFrom))
+        .raw<[string, number, number]>(),
 
       // Fase 25.1 (fixed 2026-07-18) — distinct anonymous agents, and Fase
       // 24.7 retention (agents seen both this week and last). Two opposing
@@ -1054,7 +1074,7 @@ async function computeDashboardData(
       readCronStatuses(kv),
     ]);
 
-  const series = rollupSeries(seriesRows, since7);
+  const series = rollupSeries(seriesRows, since7, seriesDailyRows);
   const agents = rollupAgents(agentRows, { d14: now - 2 * MS_7D, d7: since7, h24: since1 });
   const connectStats = rollupConnects(connectRows, since7);
   const s = summary ?? { c30: 0, c7: 0, c1: 0, r30: 0, r7: 0, r1: 0, p30: 0, p7: 0, p1: 0 };

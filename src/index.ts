@@ -24,6 +24,7 @@ import { X_PUSH_SW_JS } from "./x-agent/push-sw.js";
 import { dispatchXAgentApi } from "./x-agent/panel-api.js";
 import { fetchXMetrics } from "./x-agent/metrics.js";
 import { snapshotDirectoryStats } from "./analytics/directory-stats.js";
+import { rollupAnalyticsDaily } from "./analytics/daily.js";
 
 export interface Env {
   // Fase 21.1 — Workers Static Assets binding for the public website
@@ -1350,5 +1351,7 @@ export default {
     // Fase 25.3 — daily directory-listing snapshot (Smithery useCount, Glama
     // listing), same piggyback pattern as the metrics fetch above.
     ctx.waitUntil(runTask("directory-stats", snapshotDirectoryStats(env)));
+    // Fase B2 — resumen diario de las series del panel (hoy y ayer, UTC).
+    ctx.waitUntil(runTask("analytics-daily", rollupAnalyticsDaily(env)));
   },
 };

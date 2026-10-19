@@ -1,6 +1,6 @@
 import { sendTelegram, type TelegramEnv } from "./telegram.js";
-import { classifyToolError } from "./error-classification.js";
-import { isProbeClient } from "../analytics/surface.js";
+import { isPagedToolError } from "./error-classification.js";
+import { PAID_TYPES_SET } from "../analytics/payment-types.js";
 
 /**
  * Real-time Telegram alerts for failed/rejected analytics events, called from
@@ -91,29 +91,14 @@ export function maybeAlertError(env: AlertEnv, ctx: ExecutionContext, params: Er
         // Fase 25.9 — LA regla. Un `tool_error` solo pagina si no es ni ruido
         // del llamante ni del destino (ver error-classification.ts). Antes se
         // paginaba por defecto y se iban anadiendo excepciones; la revision del
-        // 2026-09-17 conto 14 alertas en 5 dias y CERO accionables: 9 eran
-        // mensajes de validacion que el propio agente pidio de vuelta y 5 eran
-        // el sitio destino portandose mal (bucle de redirects, muro de bots).
-        // Eso entrena a ignorar el bot, que es exactamente como se pierde la
-        // alerta que si importa.
+        // 2026-09-17 conto 14 alertas en 5 dias y CERO accionables.
         //
-        // Siguen paginando: proveedores de COGS (fal.ai, ScreenshotOne,
-        // DataForSEO, Microlink), bindings o secretos sin configurar, tools
-        // env-aware mal cableadas y cualquier excepcion que no reconozcamos —
-        // "internal" es el caso por descarte, asi que un fallo nuevo no se
-        // pierde. Todo lo demas sigue registrado y visible en el panel.
-        if (paymentType === "tool_error" && classifyToolError(detail) !== "internal") {
-          return;
-        }
-
-        // Fase 25.4 — escaneres de directorios que hacen health-check llamando
-        // a las tools sin argumentos o pidiendo una tool inexistente. El panel
-        // los excluye de la demanda desde Fase 25.1/25.3 (IS_PROBE_SQL); el
-        // pager aprendio la misma regla aqui. Redundante con el filtro de
-        // arriba en la practica (sus errores son de clase "caller"), pero se
-        // mantiene: un escaner que provoque un error interno tampoco deberia
-        // despertar a nadie a las 3 de la manana.
-        if (paymentType === "tool_error" && isProbeClient(clientName, client)) {
+        // Fase 25.15 — la regla vive en isPagedToolError(), que es la MISMA
+        // funcion con la que el panel decide que pinta en rojo
+        // (error_rate_by_tool.our_errors). Durante un mes el panel clasifico
+        // tambien los 402 sin wallet y pinto 59 "fallos nuestros" mientras
+        // aqui sonaban 0: dos consumidores, un solo predicado, siempre.
+        if (paymentType === "tool_error" && !isPagedToolError({ paymentType, payer, detail, clientName, client })) {
           return;
         }
 
@@ -177,7 +162,6 @@ interface BusinessSignalParams {
   detail?: string | null;
 }
 
-const PAID_TYPES = new Set(["x402_paid", "x402_free_first", "prepaid", "api_key", "oauth"]);
 const NO_BALANCE_TYPES = new Set(["prepaid_insufficient", "api_key_insufficient", "oauth_insufficient"]);
 const FIRST_PAID_TTL_SEC = 7 * 24 * HOUR_SEC;
 const NO_BALANCE_ALERT_TTL_SEC = 6 * HOUR_SEC;
@@ -218,7 +202,7 @@ export function maybeAlertBusinessSignal(env: AlertEnv, ctx: ExecutionContext, p
         // 🟢 First paid call from this payer — the conversion the 🟡 paywall
         // alert (maybeAlertPaywallHit) is watching for. At most once/week per
         // payer so a payer's Nth call that week doesn't re-alert.
-        if (PAID_TYPES.has(paymentType) && payer && payer !== "anon") {
+        if (PAID_TYPES_SET.has(paymentType) && payer && payer !== "anon") {
           if (!(await shouldAlert(env.X402_NONCES, `alert:firstpaid:${payer}`, FIRST_PAID_TTL_SEC))) return;
           await sendTelegram(
             env,

@@ -100,6 +100,7 @@ export const PANEL_HTML = `<!DOCTYPE html>
   .pager-bar .seg-btn[disabled] { opacity: 0.35; cursor: default; }
   .pager-info { font-family: var(--font-mono); }
   .grid-wide { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 24px; }
+  .retention-note { font-size: 12px; color: var(--muted); margin: -6px 0 14px; }
   .chart-wrap { position: relative; }
   .chart-wrap text { font-family: var(--font-mono); }
   .chart-empty { padding: 56px 0; text-align: center; color: var(--muted); font-size: 12px; }
@@ -297,18 +298,29 @@ function pagerBar(key, total) {
   </div>\`;
 }
 
+// Fase 25.15 — colores de clase (ver LoggedFailureClass en queries.ts). Solo
+// "paged" es rojo: es exactamente lo que sono en Telegram. Un internal que no
+// pagino (probe o admin) se ve, pero apagado.
+const CLASS_COLORS = { internal: '#f85149', upstream: '#d29922', caller: '#6e7681', payment: '#e3b341', money: '#f85149' };
+function classDot(e) {
+  const color = e.paged ? CLASS_COLORS.internal : (e.class === 'internal' ? '#484f58' : (CLASS_COLORS[e.class] ?? '#555'));
+  const label = e.paged ? 'paged' : (e.class === 'internal' ? 'internal · muted' : e.class);
+  return \`<span class="dot" style="background:\${color};display:inline-block;margin-right:5px"></span>\${esc(label)}\`;
+}
+
 function errorTable(items) {
   if (!items || items.length === 0) return '<div style="color:var(--muted);font-size:12px">no errors 🎉</div>';
   const { pageItems, total } = paginate(items, 'errors');
   const rows = pageItems.map(e => \`<tr>
     <td>\${timeLabel(e.ts)}</td>
     <td>\${esc(e.tool)}</td>
-    <td><span class="dot" style="background:\${PAY_COLORS[e.type] ?? '#555'};display:inline-block;margin-right:5px"></span>\${esc(e.type)}</td>
-    <td title="\${esc(e.client)}">\${esc((e.client || '').slice(0, 24))}</td>
+    <td title="\${esc(e.type)}">\${classDot(e)}</td>
+    <td title="\${esc(e.client)}">\${esc(e.client_name || (e.client || '').slice(0, 24) || '—')}</td>
+    <td title="\${esc(e.payer)}">\${esc(truncatePayer(e.payer))}</td>
     <td class="err-detail" title="\${esc(e.detail)}">\${esc(e.detail) || '—'}</td>
   </tr>\`).join('');
   return \`<table class="err-table">
-    <thead><tr><th>Time</th><th>Tool</th><th>Type</th><th>Client</th><th>Detail</th></tr></thead>
+    <thead><tr><th>Time</th><th>Tool</th><th>Class</th><th>Client</th><th>Payer</th><th>Detail</th></tr></thead>
     <tbody>\${rows}</tbody>
   </table>\${pagerBar('errors', total)}\`;
 }
@@ -358,17 +370,17 @@ function errorRateChart(items) {
   if (!items || items.length === 0) return '<div style="color:var(--muted);font-size:12px">no errors yet</div>';
   return items.map(item => {
     const caller = item.caller_errors || 0;
-    const ourPct = item.total > 0 ? Math.round((item.our_errors / item.total) * 100) : 0;
-    const upstreamPct = item.total > 0 ? Math.round((item.upstream_errors / item.total) * 100) : 0;
-    const callerPct = item.total > 0 ? Math.round((caller / item.total) * 100) : 0;
+    const muted = item.muted_errors || 0;
+    const pct = n => item.total > 0 ? Math.round((n / item.total) * 100) : 0;
     return \`<div class="bar-row">
     <div class="bar-label" title="\${esc(item.tool)}">\${esc(item.tool)}</div>
     <div class="bar-track">
-      <div class="bar-fill" style="width:\${ourPct}%;background:#f85149" title="our_errors (pagina): \${item.our_errors}"></div>
-      <div class="bar-fill" style="width:\${upstreamPct}%;background:#d29922" title="upstream_errors: \${item.upstream_errors}"></div>
-      <div class="bar-fill" style="width:\${callerPct}%;background:#6e7681" title="caller_errors: \${caller}"></div>
+      <div class="bar-fill" style="width:\${pct(item.our_errors)}%;background:#f85149" title="our_errors (paged): \${item.our_errors}"></div>
+      <div class="bar-fill" style="width:\${pct(item.upstream_errors)}%;background:#d29922" title="upstream_errors: \${item.upstream_errors}"></div>
+      <div class="bar-fill" style="width:\${pct(caller)}%;background:#6e7681" title="caller_errors: \${caller}"></div>
+      <div class="bar-fill" style="width:\${pct(muted)}%;background:#484f58" title="internal, not paged (probe/admin): \${muted}"></div>
     </div>
-    <div class="bar-count" title="ours: \${item.our_errors} · upstream: \${item.upstream_errors} · caller: \${caller}">\${item.errors}/\${item.total}</div>
+    <div class="bar-count" title="ours: \${item.our_errors} · upstream: \${item.upstream_errors} · caller: \${caller} · muted: \${muted}">\${item.errors}/\${item.total}</div>
   </div>\`;
   }).join('');
 }
@@ -422,9 +434,9 @@ function directoryStatsTable(stats, smitherySeries) {
 // Direct signal for whether the actionable 402 error.message (Fase 24.5)
 // recovers the conversion an agent loses when it only sees a bare
 // "Payment required" and never finds wallet_setup or /checkout.
-function paywallFunnelStat(pf) {
+function paywallFunnelStat(pf, label) {
   if (!pf || pf.hit_payers === 0) {
-    return '<div style="color:var(--muted);font-size:12px">no paywall hits in 30d</div>';
+    return '<div style="color:var(--muted);font-size:12px">no paywall hits in ' + label + '</div>';
   }
   const pct = Math.round((pf.converted_payers / pf.hit_payers) * 100);
   return \`
@@ -481,16 +493,31 @@ function surfaceFunnelTable(surface) {
   </table>\${pagerBar('funnel', total)}\`;
 }
 
-function conversion(breakdown) {
-  if (!breakdown || breakdown.length === 0) return { rate: 0, paid402: 0, total402: 0 };
-  const paid = (breakdown.find(b => b.type === 'x402_paid')?.calls ?? 0)
-             + (breakdown.find(b => b.type === 'x402_free_first')?.calls ?? 0);
-  // 402_rejected is split into 402_no_wallet (benign handshake) + 402_pay_failed
-  // (real verification failure) — both count as "prompted for payment".
-  const rejected = (breakdown.find(b => b.type === '402_no_wallet')?.calls ?? 0)
-                  + (breakdown.find(b => b.type === '402_pay_failed')?.calls ?? 0);
-  const total = paid + rejected;
-  return { rate: total > 0 ? Math.round((paid / total) * 100) : 0, paid, total };
+// Fase 25.15 — la ventana que siguen las tarjetas. 24h/7d/30d tienen corte
+// propio en el payload (by_window, mismas filas leidas); 90d y 1y no (habria
+// que leer 365 d de eventos en cada carga), asi que ensenan 30d y lo dicen.
+function win() {
+  return state.days === 1 ? 'h24' : state.days === 7 ? 'd7' : 'd30';
+}
+function winLabel() {
+  return state.days === 1 ? '24h' : state.days === 7 ? '7d' : '30d';
+}
+function windowStats(d) {
+  const w = d.by_window && d.by_window[win()];
+  return w || { calls: 0, revenue: 0, unique_payers: 0, unique_anon_agents: 0, avg_latency_ms: 0, p50_latency_ms: 0, p95_latency_ms: 0, top_tools: [], payment_breakdown: [], calls_by_client: [], paywall_funnel: { hit_payers: 0, converted_payers: 0 }, error_rate_by_tool: [], latency_by_tool: [] };
+}
+
+// Fase 25.15 — con 90d/1y, los connects (y con ellos surface, sesiones y
+// agentes) solo cubren la retencion de connect, y los eventos empiezan en
+// retention.oldest_event_ts. Antes el panel lo callaba.
+function retentionNotice(d) {
+  const r = d.retention;
+  if (!r || state.days <= r.connect_days) return '';
+  const oldest = r.oldest_event_ts ? new Date(r.oldest_event_ts).toISOString().slice(0, 10) : null;
+  const parts = ['connects and surface cover ' + r.connect_days + 'd; per-window cards show 30d'];
+  if (oldest) parts.push('events since ' + oldest);
+  parts.push('events kept ' + r.events_days + 'd');
+  return '<div class="retention-note">' + esc(parts.join(' · ')) + '</div>';
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +827,10 @@ function tabsBar() {
 
 function render(d) {
   lastData = d;
-  const cv = conversion(d.payment_breakdown);
+  const w = windowStats(d);
+  const wl = winLabel();
+  const pf = w.paywall_funnel || { hit_payers: 0, converted_payers: 0 };
+  const pfRate = pf.hit_payers > 0 ? Math.round((pf.converted_payers / pf.hit_payers) * 100) : 0;
 
   let callsPlot, revPlot, granularity, callsSum, revSum, callsDelta, revDelta;
   if (state.days === 1) {
@@ -844,18 +874,19 @@ function render(d) {
         <div class="kpi-sub">usage · USDC (excl. credit purchases)</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">Unique agents</div>
-        <div class="kpi-value">\${fmt(d.summary.unique_payers_30d + (d.summary.unique_anon_agents_30d || 0), 0)}</div>
-        <div class="kpi-sub">\${fmt(d.summary.unique_payers_30d, 0)} identified · \${fmt(d.summary.unique_anon_agents_30d || 0, 0)} anon · \${fmt(d.summary.returning_agents_7d || 0, 0)} returning · 7d</div>
+        <div class="kpi-label">Unique agents · \${wl}</div>
+        <div class="kpi-value">\${fmt(w.unique_payers + (w.unique_anon_agents || 0), 0)}</div>
+        <div class="kpi-sub">\${fmt(w.unique_payers, 0)} identified · \${fmt(w.unique_anon_agents || 0, 0)} anon · \${fmt(d.summary.returning_agents_7d || 0, 0)} returning · 7d</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">402→paid conv.</div>
-        <div class="kpi-value yellow">\${cv.rate}%</div>
-        <div class="kpi-sub">\${cv.paid} paid / \${cv.total} prompted · 30d</div>
+        <div class="kpi-label">Paywall → paid · \${wl}</div>
+        <div class="kpi-value yellow">\${pfRate}%</div>
+        <div class="kpi-sub">\${fmt(pf.converted_payers, 0)} of \${fmt(pf.hit_payers, 0)} agents that saw a 402 paid within 7d</div>
       </div>
     </div>
 
     \${controlsBar()}
+    \${retentionNotice(d)}
 
     <div class="grid2">
       <div class="card">
@@ -870,12 +901,12 @@ function render(d) {
 
     <div class="grid3">
       <div class="card">
-        <h2>Top tools · 30d</h2>
-        <div class="bar-chart">\${barChart(d.top_tools, 'calls', 'tool', '#a371f7')}</div>
+        <h2>Top tools · \${wl}</h2>
+        <div class="bar-chart">\${barChart(w.top_tools, 'calls', 'tool', '#a371f7')}</div>
       </div>
       <div class="card">
-        <h2>Payment mix</h2>
-        \${payChips(d.payment_breakdown)}
+        <h2>Payment mix · \${wl}</h2>
+        \${payChips(w.payment_breakdown)}
       </div>
       <div class="card">
         <h2>Credits</h2>
@@ -885,24 +916,24 @@ function render(d) {
 
     <div class="grid2">
       <div class="card">
-        <h2>Calls by surface · 30d</h2>
-        <div class="bar-chart">\${barChart(d.surface && d.surface.calls_by_client, 'calls', 'client', '#2f81f7')}</div>
+        <h2>Calls by surface · \${wl}</h2>
+        <div class="bar-chart">\${barChart(w.calls_by_client, 'calls', 'client', '#2f81f7')}</div>
       </div>
       <div class="card">
-        <h2>Paywall → conversion · 30d</h2>
-        \${paywallFunnelStat(d.paywall_funnel)}
+        <h2>Paywall → conversion · \${wl} (agents)</h2>
+        \${paywallFunnelStat(pf, wl)}
       </div>
     </div>
 
     <div class="grid-wide">
       <div class="card">
-        <h2>Error rate by tool · 30d <span style="color:var(--muted);font-weight:400">(red = ours, amber = upstream)</span></h2>
-        \${errorRateChart(d.error_rate_by_tool)}
+        <h2>Tool errors · \${wl} <span style="color:var(--muted);font-weight:400">(red = paged, amber = upstream, grey = caller)</span></h2>
+        \${errorRateChart(w.error_rate_by_tool)}
       </div>
       <div class="card">
-        <h2>Latency by tool · 30d</h2>
-        \${latencyByToolTable(d.latency_by_tool)}
-        <div class="stat-row" style="margin-top:8px"><span>Global avg / p50 / p95</span><span class="stat-val">\${d.summary.avg_latency_ms} / \${d.summary.p50_latency_ms} / \${d.summary.p95_latency_ms} ms</span></div>
+        <h2>Latency by tool · \${wl}</h2>
+        \${latencyByToolTable(w.latency_by_tool)}
+        <div class="stat-row" style="margin-top:8px"><span>Global avg / p50 / p95</span><span class="stat-val">\${w.avg_latency_ms} / \${w.p50_latency_ms} / \${w.p95_latency_ms} ms</span></div>
       </div>
     </div>
   \`;
@@ -925,7 +956,7 @@ function render(d) {
     </div>
 
     <div class="card" style="margin-bottom:24px">
-      <h2>Recent errors · 30d</h2>
+      <h2>Recent failures · 30d <span style="color:var(--muted);font-weight:400">(402 handshakes excluded)</span></h2>
       \${errorTable(d.recent_errors)}
     </div>
 
@@ -962,9 +993,9 @@ async function load() {
 load();
 
 // Fase 25.8 — aqui estaba un setInterval(load, 60_000), sin mirar siquiera si
-// la pestana estaba visible. Cada carga son ~22 consultas sobre
-// analytics_events (~97k filas leidas), asi que un refresco por minuto son
-// ~5,8M filas/hora: mas que el limite DIARIO del free tier de D1 (5M) en una
+// la pestana estaba visible. Cada carga son ~25 consultas sobre
+// analytics_events (~100k filas leidas), asi que un refresco por minuto son
+// ~6M filas/hora: mas que el limite DIARIO del free tier de D1 (5M) en una
 // sola hora, y se pagaba igual con la pestana olvidada en segundo plano.
 //
 // No hay intervalo. Este panel mide un servidor con ~150 llamadas al dia: no

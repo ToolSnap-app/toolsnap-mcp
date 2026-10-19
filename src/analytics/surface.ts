@@ -206,6 +206,12 @@ export const PROBE_CLIENTS: ReadonlySet<string> = new Set([
   // patron es el de siempre: conectar, listar y llamar a las tools sin
   // argumentos. 54 connects y 7 de las 14 alertas de Telegram en 5 dias.
   "brick.blue",
+  // Fase 25.15 (2026-10-20). Health checker Java: 4.614 connects en 7 dias
+  // desde tres UAs (Java-http-client, fixter-monitoring/1.0, ReactorNetty) y
+  // CERO tool calls. Era el 44% de los connects del servidor y fue la causa
+  // de la cuota de KV agotada en 25.14. Su hermano FixterBot ya caia por la
+  // convencion "(+http" del UA; este se identifica solo por nombre.
+  "fixter-monitoring",
 ]);
 
 /**

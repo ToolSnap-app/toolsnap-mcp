@@ -73,7 +73,7 @@
   // src/index.ts's scheduled() by event.cron:
   //   "0 9 * * *"   (daily, 09:00 UTC) → usage alerts for COGS tools
   //     (screenshot_url quota vs ScreenshotOne free tier), Telegram at
-  //     50/90/100 + Monday digest. Also purges analytics_events >730 days
+  //     50/90/100 + Monday digest. Also purges analytics_events >365 days (connect >60 days)
   //     (money ledger tables untouched). Fase 22.3: also fetches X Agent
   //     engagement metrics (x_metrics) for recently-published posts.
   //   "*/5 * * * *" (every 5 min) → Fase 22.1 X Agent publisher: publishes

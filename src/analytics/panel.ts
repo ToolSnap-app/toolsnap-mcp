@@ -947,8 +947,15 @@ async function load() {
   try {
     const res = await fetch('/analytics/data' + (state.internal ? '?include_internal=1' : ''));
     if (!res.ok) {
-      const txt = await res.text();
-      document.getElementById('root').innerHTML = \`<div class="error">Error \${res.status}: \${txt}</div>\`;
+      const msg = res.status === 401 ? 'Sesión de Cloudflare Access caducada: recarga la página para volver a entrar.'
+        : res.status === 502 ? 'D1 no responde (error del servidor). Reintenta en un minuto.'
+        : 'Error HTTP ' + res.status + ' al cargar los datos.';
+      const box = document.createElement('div');
+      box.className = 'error';
+      box.textContent = msg;
+      const root = document.getElementById('root');
+      root.innerHTML = '';
+      root.appendChild(box);
       return;
     }
     const data = await res.json();

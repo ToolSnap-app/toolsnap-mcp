@@ -869,6 +869,11 @@ export default {
     // Analytics data API — called by the dashboard panel via fetch('/analytics/data')
     // ?include_internal=1 also counts our own dev/testing traffic (excluded by default).
     if (method === "GET" && url.pathname === "/analytics/data") {
+      // Defensa en profundidad (fase 25.16): el edge ya gatea con Access, pero
+      // exigimos tambien la cabecera que Access estampa, como en /x-agent/api/*.
+      if (!request.headers.get("cf-access-authenticated-user-email")) {
+        return jsonResponse({ error: "Unauthorized" }, 401);
+      }
       try {
         const includeInternal = url.searchParams.get("include_internal") === "1";
         const data = await getDashboardData(env.PREPAID_DB, includeInternal);
@@ -885,7 +890,14 @@ export default {
     // path does its own token check instead. No PII: payers are wallet
     // addresses/hashes, clients are MCP surface names.
     if (method === "GET" && url.pathname === "/reports/analytics") {
-      const token = url.searchParams.get("token");
+      // Fase 25.16 — `Authorization: Bearer` es la via principal (una URL con
+      // el secreto acaba en logs). `?token=` sigue valiendo hasta la fase B.
+      const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.get("Authorization") ?? "")?.[1]?.trim();
+      const queryToken = url.searchParams.get("token");
+      if (!bearer && queryToken) {
+        console.warn("reports/analytics: token in query string is deprecated; use Authorization: Bearer");
+      }
+      const token = bearer ?? queryToken;
       if (!env.ANALYTICS_READ_TOKEN || token !== env.ANALYTICS_READ_TOKEN) {
         return jsonResponse({ error: "Invalid or missing token." }, 401);
       }

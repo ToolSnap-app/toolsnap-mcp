@@ -1,0 +1,23 @@
+-- Fase D0 de Analytics v2 (2026-10-20) — el 81% de las filas leidas en D1
+-- no era el panel de analytics sino OAuth.
+--
+-- Medido con `wrangler d1 insights --timePeriod 7d`: 17,7M filas leidas en
+-- 7 dias, de las que 14,3M (81%) eran
+--   UPDATE oauth_tokens SET last_used_at = ? WHERE token_id = ? AND kind = 'access'
+-- (src/oauth/tokens.ts, el bump best-effort de last_used_at en cada llamada
+-- con token OAuth: 5.533 ejecuciones, 2.581 filas leidas cada una) y 1,9M
+-- (11%) `SELECT 1 FROM oauth_tokens WHERE rotated_from = ? LIMIT ?` (la
+-- deteccion de reuso de refresh token). La tabla tiene 2.887 filas y solo
+-- estaba indexada por account_id, grant_id y expires_at: las dos consultas
+-- hacian SCAN de la tabla entera en cada llamada. Todo analytics junto
+-- (panel + crons + digest) era el 4,5%.
+--
+-- EXPLAIN QUERY PLAN sobre la base remota, antes:
+--   UPDATE ... WHERE token_id = ? AND kind = 'access'  -> SCAN oauth_tokens  (2.887 filas)
+--   SELECT 1 ... WHERE rotated_from = ?                -> SCAN oauth_tokens  (2.887 filas)
+-- Despues (ver el PR): SEARCH ... USING INDEX idx_ot_token_kind / idx_ot_rotated_from,
+-- 1 fila leida cada una. ~2,3M filas/dia menos sobre un limite free de 5M.
+--
+-- Solo indices: ninguna consulta ni regla de auth cambia (OK de Unai, 2026-10-20).
+CREATE INDEX IF NOT EXISTS idx_ot_token_kind   ON oauth_tokens (token_id, kind);
+CREATE INDEX IF NOT EXISTS idx_ot_rotated_from ON oauth_tokens (rotated_from);

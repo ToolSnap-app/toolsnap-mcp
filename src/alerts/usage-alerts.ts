@@ -84,6 +84,44 @@ async function purgeOldR2Objects(
   return deleted;
 }
 
+// directory_stats (2 filas/dia, migracion 0013) tambien se poda: ~400 dias.
+const DIRECTORY_STATS_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
+
+/**
+ * Poda de telemetria (las tablas del ledger de dinero no se tocan). Registra
+ * las filas borradas por tramo; si un tramo falla avisa por Telegram (1/24 h,
+ * best-effort) y NO relanza, para no tumbar el cron de alertas.
+ */
+export async function runRetention(env: Env, now: Date = new Date()): Promise<void> {
+  const nowMs = now.getTime();
+  const tramos: Array<[string, string, number]> = [
+    ["connect", `DELETE FROM analytics_events WHERE ts < ? AND payment_type = 'connect'`, nowMs - CONNECT_RETENTION_MS],
+    ["events", `DELETE FROM analytics_events WHERE ts < ?`, nowMs - ANALYTICS_RETENTION_MS],
+    ["directory_stats", `DELETE FROM directory_stats WHERE ts < ?`, nowMs - DIRECTORY_STATS_RETENTION_MS],
+  ];
+  for (const [name, sql, cutoff] of tramos) {
+    try {
+      const res = await env.PREPAID_DB.prepare(sql).bind(cutoff).run();
+      console.log(`retention ${name}: deleted ${res.meta?.changes ?? 0} rows`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`retention ${name} failed:`, message);
+      let throttled = false;
+      try {
+        throttled = !!(await env.X402_NONCES.get("alert:retention"));
+        if (!throttled) {
+          await env.X402_NONCES.put("alert:retention", "1", { expirationTtl: 24 * 60 * 60 });
+        }
+      } catch (kvErr) {
+        console.warn("retention alert KV failed:", kvErr instanceof Error ? kvErr.message : String(kvErr));
+      }
+      if (!throttled) {
+        await sendTelegram(env, `🔴 *retención de analytics fallando*\ntramo ${name}: ${message}`);
+      }
+    }
+  }
+}
+
 export async function checkUsageAlerts(env: Env, now: Date = new Date()): Promise<void> {
   // Purge temporary R2 files older than 24 h.
   const TTL_24H = 24 * 60 * 60 * 1000;
@@ -92,18 +130,7 @@ export async function checkUsageAlerts(env: Env, now: Date = new Date()): Promis
     purgeOldR2Objects(env.SCREENSHOTS_BUCKET, "uploads/", TTL_24H, now),
   ]);
 
-  // Retencion en dos tramos (las tablas del ledger de dinero no se tocan —
-  // esto solo poda el log de telemetria append-only).
-  await env.PREPAID_DB.batch([
-    env.PREPAID_DB.prepare(
-      `DELETE FROM analytics_events WHERE ts < ? AND payment_type = 'connect'`
-    ).bind(now.getTime() - CONNECT_RETENTION_MS),
-    env.PREPAID_DB.prepare(`DELETE FROM analytics_events WHERE ts < ?`).bind(
-      now.getTime() - ANALYTICS_RETENTION_MS
-    ),
-  ]).catch(() => {
-    // Retention is best-effort — never let it break the alerts cron.
-  });
+  await runRetention(env, now);
   const count = await monthScreenshotCount(env, now);
   const month = monthKey(now);
 

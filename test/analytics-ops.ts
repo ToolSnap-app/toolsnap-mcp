@@ -46,9 +46,11 @@ function fakeD1(mode: "ok" | "fail", sqls: string[] = []) {
         },
         first: async () => null,
         all: async () => ({ results: [] }),
+        raw: async () => [],
       }),
       first: async () => null,
       all: async () => ({ results: [] }),
+      raw: async () => [],
     }),
     batch: async () => [],
   };
@@ -95,6 +97,27 @@ console.log("/analytics/data");
   assert("without Access header → 401", r1.status === 401, String(r1.status));
   const r2 = await call(env, "/analytics/data", { "cf-access-authenticated-user-email": "a@b.c" });
   assert("with Access header → not 401", r2.status !== 401, String(r2.status));
+}
+
+// Fase 25.17 — ?fresh=1 salta la cache de 5 min; sin el, la segunda llamada no consulta D1.
+console.log("/analytics/data?fresh=1");
+{
+  const sqls: string[] = [];
+  const d1 = fakeD1("ok", sqls) as { prepare: (sql: string) => unknown };
+  const counted = { ...d1, prepare: (sql: string) => (sqls.push(sql), d1.prepare(sql)) };
+  const env = makeEnv(counted);
+  const hdr = { "cf-access-authenticated-user-email": "a@b.c" };
+  // Esta cache es de isolate y el bloque anterior ya la lleno: esa llamada cuenta como "caliente".
+  const before = sqls.length;
+  const cached = await call(env, "/analytics/data", hdr);
+  assert("cached call serves 200 without touching D1", cached.status === 200 && sqls.length === before, `${cached.status} ${sqls.length - before} queries`);
+  const fresh = await call(env, "/analytics/data?fresh=1", hdr);
+  assert("fresh=1 recomputes (new D1 queries)", fresh.status === 200 && sqls.length > before, `${fresh.status} ${sqls.length - before} queries`);
+  const afterFresh = sqls.length;
+  await call(env, "/analytics/data", hdr);
+  assert("the call after a fresh one hits the refreshed cache", sqls.length === afterFresh);
+  const noHeader = await call(env, "/analytics/data?fresh=1");
+  assert("fresh=1 still needs the Access header", noHeader.status === 401, String(noHeader.status));
 }
 
 console.log("/reports/analytics");

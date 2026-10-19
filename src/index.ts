@@ -7,6 +7,7 @@ import { PANEL_HTML } from "./analytics/panel.js";
 import { checkUsageAlerts } from "./alerts/usage-alerts.js";
 import { checkSurfaceDigest } from "./alerts/surface-digest.js";
 import { checkServerHealth } from "./alerts/health.js";
+import { recordCronOk, recordCronError } from "./alerts/cron-status.js";
 import { sendTelegram } from "./alerts/telegram.js";
 import { looksLikeApiKey, issueKey, revokeKey, accountExists, accountAddress, verifyApiKey, touchKey } from "./fiat/keys.js";
 import { debitBalance, refundDebit, getBalanceMicro, microToUsdc, usdcToMicro } from "./x402/prepaid.js";
@@ -876,7 +877,11 @@ export default {
       }
       try {
         const includeInternal = url.searchParams.get("include_internal") === "1";
-        const data = await getDashboardData(env.PREPAID_DB, includeInternal);
+        // Fase 25.17 — ?fresh=1 (boton ↻ del panel) salta la cache de 5 min. Solo
+        // aqui, detras de la cabecera de Access de arriba: /reports/analytics
+        // sigue sirviendo la cache.
+        const fresh = url.searchParams.get("fresh") === "1";
+        const data = await getDashboardData(env.PREPAID_DB, includeInternal, { kv: env.X402_NONCES, fresh });
         return jsonResponse(data);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1293,7 +1298,9 @@ export default {
     const CRON_X_CREDITS_TTL_SEC = 7 * 24 * 60 * 60;
     const runTask = (name: string, task: Promise<unknown>): Promise<void> =>
       task.then(
-        () => undefined,
+        // Fase 25.17 — marca de "ultimo OK" para la franja de salud del panel
+        // (src/alerts/cron-status.ts: best-effort, no lanza, ~50 puts/dia).
+        () => recordCronOk(env.X402_NONCES, name),
         async (err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           console.error(`${name} cron failed:`, msg);
@@ -1302,6 +1309,9 @@ export default {
           // el aviso a diario no anade nada: una vez por semana, diciendo
           // que hacer. Publicar no consume esos creditos y sigue funcionando.
           const xCredits = /\(402\).*credits-depleted/.test(msg);
+          // Fase 25.17 — el panel muestra el fallo; el de creditos de X ya esta
+          // avisado y es conocido: se ve, pero no tine la franja de rojo.
+          await recordCronError(env.X402_NONCES, name, msg, xCredits);
           try {
             const key = `alert:cron:${name}`;
             if (!(await env.X402_NONCES.get(key))) {

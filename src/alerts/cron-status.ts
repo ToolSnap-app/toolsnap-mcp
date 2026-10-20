@@ -21,6 +21,7 @@ export const CRON_TASK_NAMES = [
   "surface-digest",
   "x-agent-metrics",
   "directory-stats",
+  "analytics-daily",
 ] as const;
 
 export interface CronStatus {

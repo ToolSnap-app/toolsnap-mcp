@@ -7,9 +7,13 @@
  *
  * Run: npx tsx test/analytics-ops.ts
  */
-import worker from "../src/index.js";
+// Fase 25.18 — src/index.ts importa el panel como modulos de texto; el hook
+// tiene que registrarse antes de cargar el Worker (ver test/_support/text-modules.ts).
+import "./_support/text-modules.js";
 import { runRetention } from "../src/alerts/usage-alerts.js";
 import type { Env } from "../src/index.js";
+
+const { default: worker } = await import("../src/index.js");
 
 let passed = 0;
 let failed = 0;

@@ -13,8 +13,22 @@
     {
       "name": "worker-dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["wrangler", "dev", "--port", "8799"],
+      "runtimeArgs": [
+        "wrangler",
+        "dev",
+        "--port",
+        "8799"
+      ],
       "port": 8799
+    },
+    {
+      "name": "panel-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "tsx",
+        "scripts/panel-preview.ts"
+      ],
+      "port": 8798
     }
   ]
 }

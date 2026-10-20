@@ -10,6 +10,7 @@ import { PAID_TYPES, PAID_TYPES_SQL, DEPOSIT_TYPES_SQL } from "./payment-types.j
 import { ANALYTICS_RETENTION_DAYS, CONNECT_RETENTION_DAYS } from "./retention.js";
 import { findBrokenTools, loadHealthWindow } from "../alerts/health.js";
 import { readCronStatuses, type CronStatus } from "../alerts/cron-status.js";
+import { cogsList, EXECUTED_SQL, type CogsRow, type ToolCogsRow } from "./cogs.js";
 
 const MS_24H = 24 * 60 * 60 * 1000;
 const MS_7D = 7 * 24 * 60 * 60 * 1000;
@@ -152,6 +153,8 @@ export interface WindowStats {
   paywall_funnel: { hit_payers: number; converted_payers: number };
   error_rate_by_tool: ErrorRateRow[];
   latency_by_tool: Array<{ tool: string; calls: number; p50_latency_ms: number; p95_latency_ms: number }>;
+  /** Fase 25.18 — COGS estimado por tool (solo tools con COGS > 0 en la ventana; ver cogs.ts). */
+  cogs: CogsRow[];
 }
 
 /** Fase 25.17 — la franja de estado del panel: lo que esta roto AHORA, no lo que paso en 30 d. */
@@ -784,15 +787,25 @@ async function computeDashboardData(
         .bind(since7, since1, since7, since1, since7, since1, since30)
         .first<{ c30: number; c7: number; c1: number; r30: number; r7: number; r1: number; p30: number; p7: number; p1: number }>(),
 
+      // Fase 25.18 — la misma consulta trae ademas, por tool y ventana, las
+      // llamadas EJECUTADAS (las que tocaron al proveedor) y la suma de
+      // cogs_usdc registrado: mismas filas leidas, sin consulta nueva (cogs.ts).
       db
         .prepare(
-          `SELECT tool_name AS tool, count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
+          `SELECT tool_name AS tool,
+                  SUM(${EXECUTED_SQL}) AS e30,
+                  SUM(ts >= ? AND ${EXECUTED_SQL}) AS e7,
+                  SUM(ts >= ? AND ${EXECUTED_SQL}) AS e1,
+                  COALESCE(SUM(CASE WHEN ${EXECUTED_SQL} THEN cogs_usdc END), 0) AS g30,
+                  COALESCE(SUM(CASE WHEN ts >= ? AND ${EXECUTED_SQL} THEN cogs_usdc END), 0) AS g7,
+                  COALESCE(SUM(CASE WHEN ts >= ? AND ${EXECUTED_SQL} THEN cogs_usdc END), 0) AS g1,
+                  count(*) AS c30, SUM(ts >= ?) AS c7, SUM(ts >= ?) AS c1
            FROM analytics_events
            WHERE ts >= ? AND payment_type != 'connect'${internalFilter}
            GROUP BY tool_name`
         )
-        .bind(since7, since1, since30)
-        .all<{ tool: string; c30: number; c7: number; c1: number }>(),
+        .bind(since7, since1, since7, since1, since7, since1, since30)
+        .all<{ tool: string; c30: number; c7: number; c1: number } & ToolCogsRow>(),
 
       // 402_rejected is split into a benign "no wallet yet" handshake
       // (detail = no_payment_payload) vs. a real payment-verification failure,
@@ -1157,6 +1170,7 @@ async function computeDashboardData(
       calls_by_client: clientCallsList(clientRows, col),
       paywall_funnel: funnelByWindow[w],
       error_rate_by_tool: rollupErrorRates(errRows, totals, since),
+      cogs: cogsList(toolRows, col.slice(1) as "30" | "7" | "1"),
     };
   }
   const d30 = byWindow.d30;

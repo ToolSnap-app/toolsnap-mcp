@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow">
+<title>toolsnap analytics</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="preload" href="/fonts/Supreme-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+/*__PANEL_CSS__*/
+</style>
+</head>
+<body>
+<svg hidden aria-hidden="true" focusable="false">
+  <symbol id="i-refresh" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.6 2.6v3.2h-3.2"/>
+  </symbol>
+  <symbol id="i-line" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 11.5l3.6-4 3 2.4L14 4.5"/>
+  </symbol>
+  <symbol id="i-bars" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+    <path d="M3 13.5V8M8 13.5V3.5M13 13.5V6.5"/>
+  </symbol>
+  <symbol id="i-prev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 3.5L5.5 8 10 12.5"/>
+  </symbol>
+  <symbol id="i-next" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3.5L10.5 8 6 12.5"/>
+  </symbol>
+</svg>
+
+<header class="top">
+  <h1 class="brand"><span>toolsnap</span><span class="brand-sub">analytics</span></h1>
+  <div class="top-right">
+    <span id="last-updated" class="updated" aria-live="polite">loading…</span>
+    <button type="button" id="refresh" class="btn" aria-busy="false" title="Reload now, skipping the 5-minute server cache">
+      <svg aria-hidden="true"><use href="#i-refresh"/></svg><span class="label">refresh</span>
+    </button>
+  </div>
+</header>
+
+<main id="main" aria-busy="false">
+  <div id="notice" class="notice" role="alert" hidden></div>
+  <div id="health" class="health" role="status"></div>
+
+  <nav class="bar" aria-label="Panel controls">
+    <div class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" class="tab" role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true" data-tab="overview">Overview</button>
+      <button type="button" class="tab" role="tab" id="tab-logs" aria-controls="view-logs" aria-selected="false" data-tab="logs">Registros</button>
+    </div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Time range">
+        <button type="button" data-days="1" aria-pressed="false">24h</button>
+        <button type="button" data-days="7" aria-pressed="false">7d</button>
+        <button type="button" data-days="30" aria-pressed="true">30d</button>
+        <button type="button" data-days="90" aria-pressed="false">90d</button>
+        <button type="button" data-days="365" aria-pressed="false">1y</button>
+      </div>
+      <div class="seg" role="group" aria-label="Intraday granularity" id="gran" hidden>
+        <button type="button" data-granularity="30m" aria-pressed="false">30m</button>
+        <button type="button" data-granularity="1h" aria-pressed="true">1h</button>
+        <button type="button" data-granularity="4h" aria-pressed="false">4h</button>
+      </div>
+      <div class="seg" role="group" aria-label="Chart type">
+        <button type="button" data-view="line" aria-pressed="true"><svg aria-hidden="true"><use href="#i-line"/></svg>line</button>
+        <button type="button" data-view="bar" aria-pressed="false"><svg aria-hidden="true"><use href="#i-bars"/></svg>bars</button>
+      </div>
+      <div class="seg" role="group" aria-label="Traffic source" title="external = real demand only · + internal also counts our own dev and testing traffic">
+        <button type="button" data-internal="0" aria-pressed="true">external</button>
+        <button type="button" data-internal="1" aria-pressed="false">+ internal</button>
+      </div>
+    </div>
+  </nav>
+  <p id="retention" class="retention" hidden></p>
+
+  <section id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
+    <div class="kpis">
+      <article class="kpi" data-kpi="calls" data-state="loading">
+        <p class="kpi-value"><span class="num">–</span><span class="delta"></span></p>
+        <p class="kpi-label">Calls <span class="win"></span></p>
+        <p class="kpi-sub">MCP tool calls</p>
+      </article>
+      <article class="kpi" data-kpi="revenue" data-state="loading">
+        <p class="kpi-value"><span class="num">–</span><span class="delta"></span></p>
+        <p class="kpi-label">Revenue <span class="win"></span></p>
+        <p class="kpi-sub">usage, USDC (credit purchases excluded)</p>
+      </article>
+      <article class="kpi" data-kpi="agents" data-state="loading">
+        <p class="kpi-value"><span class="num">–</span><span class="delta"></span></p>
+        <p class="kpi-label">Unique agents <span class="win"></span></p>
+        <p class="kpi-sub"></p>
+      </article>
+      <article class="kpi" data-kpi="paywall" data-state="loading">
+        <p class="kpi-value"><span class="num">–</span><span class="delta"></span></p>
+        <p class="kpi-label">Paywall → paid <span class="win"></span></p>
+        <p class="kpi-sub"></p>
+      </article>
+    </div>
+
+    <div class="grid grid-2">
+      <section class="panel" data-panel="calls-chart" data-state="loading" aria-labelledby="h-calls-chart">
+        <h2 id="h-calls-chart">Calls <span class="win"></span></h2>
+        <div class="panel-body"></div>
+      </section>
+      <section class="panel" data-panel="revenue-chart" data-state="loading" aria-labelledby="h-revenue-chart">
+        <h2 id="h-revenue-chart">Revenue <span class="win"></span><span class="note">USDC</span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+
+    <div class="grid grid-3">
+      <section class="panel" data-panel="top-tools" data-state="loading" aria-labelledby="h-top-tools">
+        <h2 id="h-top-tools">Top tools <span class="win"></span></h2>
+        <div class="panel-body"></div>
+      </section>
+      <section class="panel" data-panel="payment-mix" data-state="loading" aria-labelledby="h-payment-mix">
+        <h2 id="h-payment-mix">Payment mix <span class="win"></span></h2>
+        <div class="panel-body"></div>
+      </section>
+      <section class="panel" data-panel="credits" data-state="loading" aria-labelledby="h-credits">
+        <h2 id="h-credits">Credits <span class="note">balances table</span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+
+    <div class="grid grid-2">
+      <section class="panel" data-panel="surface" data-state="loading" aria-labelledby="h-surface">
+        <h2 id="h-surface">Calls by surface <span class="win"></span></h2>
+        <div class="panel-body"></div>
+      </section>
+      <section class="panel" data-panel="paywall" data-state="loading" aria-labelledby="h-paywall">
+        <h2 id="h-paywall">Paywall → conversion <span class="win"></span><span class="note">agents</span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+
+    <div class="grid grid-wide">
+      <section class="panel" data-panel="errors" data-state="loading" aria-labelledby="h-errors">
+        <h2 id="h-errors">Tool errors <span class="win"></span></h2>
+        <div class="panel-body"></div>
+      </section>
+      <section class="panel" data-panel="latency" data-state="loading" aria-labelledby="h-latency">
+        <h2 id="h-latency">Latency by tool <span class="win"></span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+  </section>
+
+  <section id="view-logs" role="tabpanel" aria-labelledby="tab-logs" hidden>
+    <div class="grid grid-wide">
+      <section class="panel" data-panel="funnel" data-state="loading" aria-labelledby="h-funnel">
+        <h2 id="h-funnel">Surface funnel <span class="note">connects 7d · sessions 30d</span></h2>
+        <div class="panel-body"></div>
+      </section>
+      <section class="panel" data-panel="directory" data-state="loading" aria-labelledby="h-directory">
+        <h2 id="h-directory">Directory coverage <span class="win">7d</span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+    <div class="grid">
+      <section class="panel" data-panel="listings" data-state="loading" aria-labelledby="h-listings">
+        <h2 id="h-listings">Directory listings</h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+    <div class="grid">
+      <section class="panel" data-panel="failures" data-state="loading" aria-labelledby="h-failures">
+        <h2 id="h-failures">Recent failures <span class="win">30d</span><span class="note">402 handshakes excluded</span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+    <div class="grid">
+      <section class="panel" data-panel="purchases" data-state="loading" aria-labelledby="h-purchases">
+        <h2 id="h-purchases">Credit purchases <span class="win">365d</span></h2>
+        <div class="panel-body"></div>
+      </section>
+    </div>
+  </section>
+</main>
+<script type="module">
+/*__PANEL_JS__*/
+</script>
+</body>
+</html>

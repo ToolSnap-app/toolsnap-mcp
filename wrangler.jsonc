@@ -79,6 +79,16 @@
   //   "*/5 * * * *" (every 5 min) → Fase 22.1 X Agent publisher: publishes
   //     any due `scheduled` row in x_queue (respects depends_on/min_gap_s for
   //     quote/reply/thread ordering).
+  // Fase 25.18 — el panel /analytics vive en ficheros reales
+  // (src/analytics/panel/panel.{html,css,js}) importados como texto y
+  // ensamblados en src/analytics/panel.ts. OJO: wrangler compara los globs
+  // con el ESPECIFICADOR del import ("./panel/panel.js"), no con la ruta del
+  // fichero, y "**/*.js" convertiria en texto cualquier .js importado (los
+  // "./x.js" -> x.ts del repo, node_modules/viem). Por eso los dos .js van
+  // por nombre exacto. Sin ASSETS ni rutas nuevas.
+  "rules": [
+    { "type": "Text", "globs": ["**/panel/panel.js", "**/panel/panel-lib.js", "**/*.css", "**/*.html"], "fallthrough": true }
+  ],
   "triggers": { "crons": ["0 9 * * *", "*/5 * * * *"] },
   "vars": {
     "X402_NETWORK": "base",

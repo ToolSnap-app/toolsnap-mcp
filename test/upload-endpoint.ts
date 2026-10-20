@@ -9,10 +9,15 @@
  * Run:  npx tsx test/upload-endpoint.ts
  */
 
-import { handleFileUpload, UPLOAD_ALLOWED_TYPES, FREE_UPLOAD_MAX_BYTES, PAID_UPLOAD_MAX_BYTES, type Env } from "../src/index.js";
+// Fase 25.18 — src/index.ts importa el panel como modulos de texto; el hook
+// tiene que registrarse antes de cargar el Worker (ver test/_support/text-modules.ts).
+import "./_support/text-modules.js";
+import type { Env } from "../src/index.js";
 import { resolveOwnFilesResponse } from "../src/tools/safe-fetch.js";
 import { pdfTextExtractTool } from "../src/tools/pdf-text-extract.js";
 import { hashKey } from "../src/fiat/keys.js";
+
+const { handleFileUpload, UPLOAD_ALLOWED_TYPES, FREE_UPLOAD_MAX_BYTES, PAID_UPLOAD_MAX_BYTES } = await import("../src/index.js");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

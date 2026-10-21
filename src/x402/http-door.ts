@@ -13,7 +13,7 @@
 
 import type { Env } from "../index.js";
 import { dispatch } from "../mcp/server.js";
-import { requiresPayment, getToolPrice, type ToolPrice } from "./middleware.js";
+import { requiresPayment, getToolPrice, isPaymentRequiredResult, type ToolPrice } from "./middleware.js";
 import { HTTP_TOOL_PREFIX, buildHttpPaymentRequired } from "./discovery.js";
 
 
@@ -122,6 +122,18 @@ export async function handleX402HttpTool(
     );
   }
 
+  // Echo this door's own resource + bazaar declaration when the buyer didn't,
+  // so a CDP settlement catalogs the HTTP resource (the MCP gate only fills
+  // in its mcp:// ones when these are absent). Outside the signed part.
+  if (paymentPayload && typeof paymentPayload === "object" && !Array.isArray(paymentPayload)) {
+    const pp = paymentPayload as Record<string, unknown>;
+    const challenge = buildHttpPaymentRequired(toolName, quote(toolName, env, args).payPerCallStr, env.X402_PAY_TO_ADDRESS);
+    pp.resource ??= challenge.resource;
+    const ext = { ...((pp.extensions as Record<string, unknown> | undefined) ?? {}) };
+    ext.bazaar ??= (challenge.extensions as Record<string, unknown>).bazaar;
+    pp.extensions = ext;
+  }
+
   // Same gate as MCP: no admin flag, no API key, no OAuth identity, no
   // prepaid proof — only the x402 payload, so it lands on the whitelist or
   // pay-per-call path exactly as an MCP client with a wallet would.
@@ -144,16 +156,22 @@ export async function handleX402HttpTool(
   );
 
   const r = rpc as {
-    error?: { code: number; message: string; data?: { error?: string; accepts?: Array<{ amount?: string }> } };
-    result?: { content?: Array<{ text?: string }>; isError?: boolean; _meta?: Record<string, unknown> };
+    error?: { code: number; message: string };
+    result?: {
+      content?: Array<{ text?: string }>;
+      isError?: boolean;
+      structuredContent?: { error?: string; accepts?: Array<{ amount?: string }> };
+      _meta?: Record<string, unknown>;
+    };
   } | null;
 
-  if (r?.error?.code === 402) {
+  if (isPaymentRequiredResult(r)) {
     // Re-issue the challenge in HTTP form, at the amount the gate asked for.
-    const amountMicro = r.error.data?.accepts?.[0]?.amount;
+    const pr = r!.result!.structuredContent!;
+    const amountMicro = pr.accepts?.[0]?.amount;
     const priceUSDC = amountMicro ? (Number(amountMicro) / 1_000_000).toString() : quote(toolName, env, args).payPerCallStr;
     return paymentRequiredResponse(
-      buildHttpPaymentRequired(toolName, priceUSDC, env.X402_PAY_TO_ADDRESS, r.error.data?.error ?? r.error.message)
+      buildHttpPaymentRequired(toolName, priceUSDC, env.X402_PAY_TO_ADDRESS, pr.error ?? "Payment required")
     );
   }
   if (!r?.result || r.error) {

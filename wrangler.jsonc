@@ -102,6 +102,11 @@
     // Minimum x402 deposit to open / top up a prepaid balance.
     "X402_MIN_DEPOSIT_USDC": "0.50",
     "BASE_RPC_URL": "https://base-rpc.publicnode.com",
+    // Pay-per-call settlement (src/x402/cdp.ts). "cdp" = Coinbase's hosted
+    // facilitator (pays the gas, required for the CDP Bazaar), but ONLY once
+    // both secrets exist: wrangler secret put CDP_API_KEY_ID / CDP_API_KEY_SECRET
+    // (Ed25519 key). Without them, or with "relayer", the relayer settles as before.
+    "X402_SETTLER": "cdp",
     // Comma-separated EVM addresses whitelisted for free access via wallet signature.
     // Add the relay wallet's public address here (derived from RELAYER_PRIVATE_KEY).
     "WHITELISTED_ADDRESSES": "0xd5F96b537A05f196091502bCde038C572f88efba",

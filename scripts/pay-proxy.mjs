@@ -282,14 +282,24 @@ async function signSpend(toolName) {
 // ---------------------------------------------------------------------------
 // 402 handling
 // ---------------------------------------------------------------------------
+// Two shapes reach us: the x402 v2 MCP transport for paid tools (a tool
+// result with isError + structuredContent = PaymentRequired), and the
+// JSON-RPC error 402 (error.data = PaymentRequired) still used for the
+// prepaid deposit flow and by servers deployed before 2026-10.
+function paymentRequired(resp) {
+  const sc = resp?.result?.structuredContent;
+  if (resp?.result?.isError && sc?.x402Version && Array.isArray(sc.accepts)) return sc;
+  if (resp?.error?.code === 402) return resp.error.data ?? {};
+  return null;
+}
 function is402(resp) {
-  return resp && resp.error && resp.error.code === 402;
+  return paymentRequired(resp) !== null;
 }
 function accept402(resp) {
-  return resp?.error?.data?.accepts?.[0] ?? null;
+  return paymentRequired(resp)?.accepts?.[0] ?? null;
 }
 function isDeposit402(resp) {
-  const url = resp?.error?.data?.resource?.url ?? "";
+  const url = paymentRequired(resp)?.resource?.url ?? "";
   return String(url).includes("account_deposit");
 }
 
@@ -366,10 +376,13 @@ async function handleRequest(request) {
   if (amount > MAX_PRICE_MICRO) {
     log(`402 asks ${microToUsdc(amount)} USDC > cap ${MAX_PRICE_USDC} for ${toolName} — passing 402 through`);
     // Annotate so the agent understands why it wasn't paid automatically.
-    resp.error.data = {
-      ...resp.error.data,
-      proxy_note: `Auto-payment skipped: price ${microToUsdc(amount)} USDC exceeds TOOLSNAP_MAX_PRICE_USDC=${MAX_PRICE_USDC}. Raise the cap to allow it.`,
-    };
+    const note = `Auto-payment skipped: price ${microToUsdc(amount)} USDC exceeds TOOLSNAP_MAX_PRICE_USDC=${MAX_PRICE_USDC}. Raise the cap to allow it.`;
+    if (resp.error) {
+      resp.error.data = { ...resp.error.data, proxy_note: note };
+    } else {
+      resp.result.structuredContent = { ...resp.result.structuredContent, proxy_note: note };
+      resp.result.content = [...(resp.result.content ?? []), { type: "text", text: note }];
+    }
     return resp;
   }
 

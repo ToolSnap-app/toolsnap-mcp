@@ -21,6 +21,7 @@ import {
   USDC_EIP712_NAME,
   USDC_EIP712_VERSION,
   type PaymentConfig,
+  type Eip3009Authorization,
 } from "../x402/middleware.js";
 import {
   usdcToMicro,
@@ -32,6 +33,7 @@ import {
   creditDeposit,
 } from "../x402/prepaid.js";
 import { mcpDiscoveryFields } from "../x402/discovery.js";
+import { cdpEnabled, buildCdpRequest, cdpVerify, cdpSettle, type CdpRequest } from "../x402/cdp.js";
 import { writeEvent, type AnalyticsEvent } from "../analytics/logger.js";
 import { classifySurface, persistSessionClient, readSessionClient, anonPayerId } from "../analytics/surface.js";
 import { verifyApiKey, touchKey, accountAddress, accountExists, type VerifiedKey } from "../fiat/keys.js";
@@ -409,6 +411,41 @@ async function checkAbuseRateLimit(env: Env, key: string): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+/**
+ * Settle a verified pay-per-call payment: through the CDP facilitator when a
+ * CdpRequest was prepared (cdpEnabled + CDP verify passed), else through our
+ * relayer. If CDP is unreachable at settle time the relayer takes over; that
+ * cannot charge twice, because the EIP-3009 authorization settles at most once
+ * on-chain whoever submits it. Throws on a terminal failure (the caller keeps
+ * its existing settle_failed handling). Writes the nonce to KV like the
+ * relayer path does, best-effort: the money has already moved.
+ */
+async function settleX402(
+  env: Env,
+  cdpRequest: CdpRequest | null,
+  authorization: Eip3009Authorization,
+  signature: string
+): Promise<{ txHash: string; pending: boolean; detail: string }> {
+  if (cdpRequest) {
+    const s = await cdpSettle(env, cdpRequest);
+    if (s.kind === "settled") {
+      try {
+        await env.X402_NONCES.put(authorization.nonce.toLowerCase(), s.txHash, { expirationTtl: 604_800 });
+      } catch (err) {
+        console.warn("nonce KV write after CDP settle failed:", err instanceof Error ? err.message : String(err));
+      }
+      const detail = `settler=cdp${s.pending ? " pending" : ""}${s.bazaar ? ` bazaar=${s.bazaar}` : ""}`;
+      return { txHash: s.txHash, pending: s.pending, detail };
+    }
+    if (s.kind === "failed") throw new Error(s.reason);
+    console.warn(`CDP settle unavailable, settling via relayer: ${s.reason}`);
+    const { txHash } = await settlePayment(authorization, signature, env);
+    return { txHash, pending: false, detail: "settler=relayer (cdp settle unavailable)" };
+  }
+  const { txHash } = await settlePayment(authorization, signature, env);
+  return { txHash, pending: false, detail: "settler=relayer" };
 }
 
 export async function dispatch(
@@ -1102,22 +1139,17 @@ export async function dispatch(
           // No payment payload at all → agent likely has no wallet yet.
           // Inject a wallet_setup hint into the standard x402 response so the
           // agent knows the exact next step without reading docs.
-          const base402 = buildPaymentRequiredResponse(
-            config,
-            id,
-            undefined,
-            mcpDiscoveryFields(toolName, price.payPerCallStr)
-          ) as {
-            error: { data: { extensions: Record<string, unknown> } };
-          } & JsonRpcResponse;
-          base402.error.data.extensions = {
-            // Keep the bazaar discovery declaration alongside the hints.
-            ...base402.error.data.extensions,
-            no_payment_method: true,
-            next_tool: "wallet_setup",
-            hint: "No payment payload detected. Three ways forward: (1) call wallet_setup to create a wallet your agent controls (ToolSnap never sees the key), then fund it with USDC on Base; (2) if your human prefers a card, they can buy credits and either sign in via /mcp/oauth or paste an API key — see error.data.oauth/fiat below; (3) the free tools (most of the catalog) still work with no payment at all.",
-          };
-          return base402;
+          const discovery = mcpDiscoveryFields(toolName, price.payPerCallStr);
+          return buildPaymentRequiredResponse(config, id, undefined, {
+            ...discovery,
+            extensions: {
+              // Keep the bazaar discovery declaration alongside the hints.
+              ...discovery.extensions,
+              no_payment_method: true,
+              next_tool: "wallet_setup",
+              hint: "No payment payload detected. Three ways forward: (1) call wallet_setup to create a wallet your agent controls (ToolSnap never sees the key), then fund it with USDC on Base; (2) if your human prefers a card, they can buy credits and either sign in via /mcp/oauth or paste an API key — see oauth/fiat in this payment-required object; (3) the free tools (most of the catalog) still work with no payment at all.",
+            },
+          }) as JsonRpcResponse;
         }
 
         // Step 2: off-chain verification (require at least the per-tool price)
@@ -1139,6 +1171,55 @@ export async function dispatch(
             verifyResult.reason,
             mcpDiscoveryFields(toolName, price.payPerCallStr)
           ) as JsonRpcResponse;
+        }
+
+        // Step 2b: CDP facilitator verify (only when X402_SETTLER=cdp and the
+        // CDP keys are set — see src/x402/cdp.ts). Runs BEFORE the tool so a
+        // payment CDP won't settle (OFAC/KYT screening, a mismatch) never gets
+        // a free result. If CDP can't be reached, this call settles through
+        // the relayer instead: the local verification above already passed.
+        let cdpRequest: CdpRequest | null = null;
+        let settleDetail = "settler=relayer";
+        if (cdpEnabled(env)) {
+          const discovery = mcpDiscoveryFields(toolName, price.payPerCallStr);
+          cdpRequest = buildCdpRequest(
+            paymentPayload as Record<string, unknown>,
+            env.X402_PAY_TO_ADDRESS,
+            price.payPerCallMicro,
+            {
+              resource: {
+                url: `mcp://tool/${toolName}`,
+                description: discovery.description,
+                mimeType: "application/json",
+                ...discovery.resource,
+              },
+              bazaar: (discovery.extensions as { bazaar?: Record<string, unknown> }).bazaar ?? null,
+            }
+          );
+          const cdpCheck = await cdpVerify(env, cdpRequest);
+          if (cdpCheck.kind === "invalid") {
+            log({
+              toolName,
+              paymentType: "402_rejected",
+              payer: verifyResult.payer!,
+              revenueUsdc: 0,
+              latencyMs: Date.now() - t0,
+              detail: cdpCheck.reason,
+              client: clientUA,
+              internal: isInternal,
+            });
+            return buildPaymentRequiredResponse(
+              config,
+              id,
+              cdpCheck.reason,
+              mcpDiscoveryFields(toolName, price.payPerCallStr)
+            ) as JsonRpcResponse;
+          }
+          if (cdpCheck.kind === "unavailable") {
+            console.warn(`CDP verify unavailable, settling via relayer: ${cdpCheck.reason}`);
+            cdpRequest = null;
+            settleDetail = "settler=relayer (cdp verify unavailable)";
+          }
         }
 
         // Step 3: check first-call-free (per payer address).
@@ -1219,13 +1300,12 @@ export async function dispatch(
         }
 
         // Step 6: settle on-chain (only if tool succeeded and not a free call)
-        let settlement: { txHash: string } | null = null;
+        let settlement: { txHash: string; pending?: boolean } | null = null;
         try {
-          settlement = await settlePayment(
-            verifyResult.authorization!,
-            verifyResult.signature!,
-            env
-          );
+          const s = await settleX402(env, cdpRequest, verifyResult.authorization!, verifyResult.signature!);
+          settlement = s;
+          // Keep the "cdp verify unavailable" note when the relayer settled.
+          if (cdpRequest) settleDetail = s.detail;
         } catch (err) {
           // Settlement failure after execution: log but still return the tool result.
           // The nonce has NOT been written to KV, so the client could retry settlement,
@@ -1261,6 +1341,7 @@ export async function dispatch(
           payer,
           revenueUsdc: Number(price.payPerCallStr),
           latencyMs: Date.now() - t0,
+          detail: settleDetail,
           client: clientUA,
           internal: isInternal,
           cogsUsdc: estimateCogsUsdc(toolName, price),
@@ -1275,6 +1356,9 @@ export async function dispatch(
               transaction: settlement.txHash,
               network: "eip155:8453",
               payer,
+              // Submitted on-chain but not yet observed confirmed (CDP
+              // settlement_pending); the relayer path never waits either.
+              ...(settlement.pending ? { pending: true } : {}),
             },
           },
         });

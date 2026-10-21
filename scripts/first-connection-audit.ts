@@ -27,6 +27,11 @@
  *    raise: spend tokens where they prevent bad calls or build trust, never
  *    on prose for directory scores. Script now runs in CI so the next
  *    overshoot fails a PR instead of drifting silently.
+ *  - 2026-10-22: 2,900 — deliberate raise (+~260 measured) for the `title` of
+ *    every core tool, advertised both top-level (MCP 2025-06-18) and as
+ *    annotations.title (older clients, Glama TDQS, Anthropic Software
+ *    Directory Policy 5E). Required for directory listing, not prose; the
+ *    hint keys that equal the spec defaults stay omitted to keep this small.
  *
  * Run:  npx tsx scripts/first-connection-audit.ts
  */
@@ -35,7 +40,7 @@ import { assertCatalogComplete } from "../src/tools/catalog.js";
 import { buildServerInstructions } from "../src/mcp/server.js";
 import type { Env } from "../src/index.js";
 
-const TOKEN_BUDGET = 2_650;
+const TOKEN_BUDGET = 2_900;
 
 /** Rough token estimate: chars / 4 (same heuristic used across the project docs). */
 function estimateTokens(s: string): number {

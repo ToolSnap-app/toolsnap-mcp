@@ -524,7 +524,6 @@ export const csvQueryTool: McpTool = {
       headers: HEADERS_SCHEMA_PROPERTY,
     },
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("csv_query is env-aware and must be called via runWithEnv");
   },
@@ -564,7 +563,6 @@ export const csvQueryXlTool: McpTool = {
     },
     required: ["url"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("csv_query_xl is env-aware and must be called via runWithEnv");
   },

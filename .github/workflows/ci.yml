@@ -28,3 +28,30 @@ jobs:
             echo "--- $t"
             npx tsx "$t"
           done
+
+  # Glama builds with `pnpm install` and starts with `pnpm run start` under
+  # mcp-proxy. A newer pnpm that refuses the install (ignored build scripts) or
+  # prints to stdout would kill its container before the first ping, so run the
+  # same two commands with the latest pnpm and demand a clean JSON-RPC reply.
+  glama-start:
+    name: Glama start (pnpm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g pnpm@latest
+      - run: pnpm install
+      - name: initialize + tools/list over stdio, stdout must be pure JSON-RPC
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+          | pnpm run start 2>/dev/null > stdio.out
+          node -e '
+            const l = require("fs").readFileSync("stdio.out","utf8").trim().split("\n").map(JSON.parse);
+            if (l.length !== 2 || l[0].id !== 1 || !l[1].result.tools.length) { console.error(l); process.exit(1); }
+            console.log("ok:", l[1].result.tools.length, "tools");
+          '

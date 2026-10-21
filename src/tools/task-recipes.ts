@@ -18,7 +18,6 @@ export const taskRecipesTool: McpTool = {
     },
     required: [],
   },
-  annotations: { readOnlyHint: true, openWorldHint: false },
   run(args) {
     const id = typeof args.recipe === "string" ? args.recipe.trim() : "";
     if (!id) {

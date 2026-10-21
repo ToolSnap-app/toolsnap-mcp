@@ -43,8 +43,9 @@ import { toolCatalogTool } from "./tool-catalog.js";
 import { useToolTool } from "./use-tool.js";
 import { memorySnippetTool } from "./memory-snippet.js";
 import { CORE_TOOLS } from "./catalog.js";
+import { annotationsFor, titleFor } from "./annotations.js";
 
-export const tools: McpTool[] = [
+const registry: McpTool[] = [
   pricingTool,
   accountBalanceTool,
   accountDepositTool,
@@ -95,6 +96,16 @@ export const tools: McpTool[] = [
 ];
 
 /**
+ * The public registry. Titles and annotations are attached here from
+ * annotations.ts so every tool carries them, whichever file defines it.
+ */
+export const tools: McpTool[] = registry.map((t) => ({
+  ...t,
+  title: titleFor(t.name),
+  annotations: annotationsFor(t.name),
+}));
+
+/**
  * Returns the tool list for tools/list responses (no run function).
  *
  * scope "core" (default for the live tools/list handler) returns only
@@ -104,8 +115,9 @@ export const tools: McpTool[] = [
  * complete for registries/directories that crawl the whole catalog.
  */
 export function listTools(scope: "core" | "full" = "full"): McpToolDefinition[] {
-  const defs = ({ name, description, inputSchema, annotations }: McpTool): McpToolDefinition => ({
+  const defs = ({ name, title, description, inputSchema, annotations }: McpTool): McpToolDefinition => ({
     name,
+    ...(title ? { title } : {}),
     description,
     inputSchema,
     ...(annotations ? { annotations } : {}),

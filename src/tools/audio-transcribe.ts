@@ -133,7 +133,6 @@ export const audioTranscribeTool: McpTool = {
     },
     required: ["audio_url", "duration_seconds"],
   },
-  annotations: { destructiveHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

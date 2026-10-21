@@ -26,9 +26,8 @@ export const useToolTool: McpTool = {
     },
     required: ["name"],
   },
-  // Dispatches to an arbitrary tool by name, so it inherits that tool's
-  // side effects (e.g. account_deposit) — annotations stay conservative.
-  annotations: { destructiveHint: true, openWorldHint: true },
+  // Annotations live in src/tools/annotations.ts. use_tool only dispatches to
+  // other catalog tools, none of which delete or overwrite anything.
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

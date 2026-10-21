@@ -112,7 +112,6 @@ export const toolCatalogTool: McpTool = {
     },
     required: [],
   },
-  annotations: { readOnlyHint: true, openWorldHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

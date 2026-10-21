@@ -503,7 +503,6 @@ export const jsonQueryTool: McpTool = {
     },
     required: ["query"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("json_query is env-aware and must be called via runWithEnv");
   },
@@ -537,7 +536,6 @@ export const jsonQueryXlTool: McpTool = {
     },
     required: ["url", "query"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("json_query_xl is env-aware and must be called via runWithEnv");
   },

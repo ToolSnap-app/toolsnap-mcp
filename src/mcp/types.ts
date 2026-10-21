@@ -42,6 +42,7 @@ export interface McpToolInputSchema {
 // MCP tool annotations — untrusted hints for clients (not security boundaries).
 // See https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations
 export interface McpToolAnnotations {
+  title?: string;
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
   idempotentHint?: boolean;
@@ -50,6 +51,8 @@ export interface McpToolAnnotations {
 
 export interface McpTool {
   name: string;
+  /** Short human-readable display name (MCP 2025-06-18 `title`). Filled from annotations.ts. */
+  title?: string;
   description: string;
   inputSchema: McpToolInputSchema;
   annotations?: McpToolAnnotations;
@@ -65,6 +68,7 @@ export interface McpTool {
 
 export interface McpToolDefinition {
   name: string;
+  title?: string;
   description: string;
   inputSchema: McpToolInputSchema;
   annotations?: McpToolAnnotations;

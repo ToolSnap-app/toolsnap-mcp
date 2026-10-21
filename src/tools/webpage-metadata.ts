@@ -121,7 +121,6 @@ export const webpageMetadataTool: McpTool = {
     },
     required: ["url"],
   },
-  annotations: { readOnlyHint: true },
   async run(args) {
     const url = args.url as string;
     if (!url) throw new Error("`url` is required.");

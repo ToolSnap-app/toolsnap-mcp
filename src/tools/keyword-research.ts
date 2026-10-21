@@ -314,7 +314,6 @@ export const keywordResearchTool: McpTool = {
     },
     required: ["keywords"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

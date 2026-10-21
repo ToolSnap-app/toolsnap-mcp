@@ -258,7 +258,6 @@ export const screenshotUrlTool: McpTool = {
     },
     required: ["url"],
   },
-  annotations: { destructiveHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

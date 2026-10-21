@@ -229,7 +229,7 @@ async function signedPayment(to: Address, value: bigint): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-console.log("MCP 402 carries the bazaar declaration");
+console.log("MCP 402: x402 MCP transport + bazaar declaration");
 {
   const call = (meta?: Record<string, unknown>) =>
     dispatch(
@@ -238,14 +238,20 @@ console.log("MCP 402 carries the bazaar declaration");
     ) as Promise<Record<string, any>>;
 
   let r = await call();
-  assert(r.error?.code === 402, "no payment -> JSON-RPC 402 (unchanged transport)");
-  assert(r.error.data.extensions.bazaar?.info?.input?.type === "mcp", "no-payment 402 has extensions.bazaar (mcp)");
-  assert(r.error.data.extensions.no_payment_method === true && r.error.data.extensions.next_tool === "wallet_setup", "wallet_setup hints still present");
-  assert(r.error.data.resource.url === "mcp://tool/screenshot_url" && r.error.data.resource.serviceName === "ToolSnap", "resource keeps mcp:// url, gains service metadata");
+  const pr = r.result?.structuredContent;
+  assert(r.result?.isError === true && pr?.x402Version === 2 && !r.error, "no payment -> tool result isError + structuredContent (x402 MCP transport)");
+  assert(r.result.content[0].text === JSON.stringify(pr), "content[0].text is JSON.stringify(structuredContent)");
+  assert(/wallet_setup/.test(r.result.content[1]?.text ?? ""), "content[1] carries the prose next steps");
+  assert(pr.extensions.bazaar?.info?.input?.type === "mcp", "no-payment 402 has extensions.bazaar (mcp)");
+  assert(pr.extensions.no_payment_method === true && pr.extensions.next_tool === "wallet_setup", "wallet_setup hints still present");
+  assert(pr.resource.url === "mcp://tool/screenshot_url" && pr.resource.serviceName === "ToolSnap", "resource keeps mcp:// url, gains service metadata");
 
   const wrongTo = JSON.parse(Buffer.from(await signedPayment("0x000000000000000000000000000000000000dEaD", 40_000n), "base64").toString());
   r = await call({ "x402/payment": wrongTo });
-  assert(r.error?.code === 402 && r.error.data.extensions.bazaar?.info?.input?.toolName === "screenshot_url", "rejected-payment 402 has extensions.bazaar too");
+  assert(
+    r.result?.isError && /Wrong recipient/.test(r.result.structuredContent.error) && r.result.structuredContent.extensions.bazaar?.info?.input?.toolName === "screenshot_url",
+    "rejected-payment 402 carries the reason and extensions.bazaar too"
+  );
 }
 
 // ---------------------------------------------------------------------------

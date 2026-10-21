@@ -46,6 +46,13 @@ export interface Env {
   X402_PAY_TO_ADDRESS: string;
   RELAYER_PRIVATE_KEY: string;
 
+  // Pay-per-call settler (src/x402/cdp.ts): "cdp" settles through Coinbase's
+  // facilitator (needed for the CDP Bazaar) once both CDP secrets are set;
+  // anything else, or a missing secret, keeps the relayer.
+  X402_SETTLER?: string;
+  CDP_API_KEY_ID?: string;
+  CDP_API_KEY_SECRET?: string;
+
   // Admin bypass key (set via: wrangler secret put ADMIN_API_KEY)
   ADMIN_API_KEY?: string;
 

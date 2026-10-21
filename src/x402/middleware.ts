@@ -400,8 +400,14 @@ function splitSignature(sig: string): { v: number; r: Hex; s: Hex } {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a JSON-RPC error response (code 402) signalling payment is required.
- * Follows x402 v2 spec MCP transport: error.data = PaymentRequired object.
+ * Build the MCP tool result signalling payment is required.
+ *
+ * x402 v2 MCP transport (specs/transports-v2/mcp.md): a tool RESULT with
+ * isError: true, the PaymentRequired object in structuredContent and the same
+ * object JSON-encoded in content[0].text. Spec clients (@x402/mcp, the
+ * Cloudflare agents x402 client) and the CDP Bazaar crawler read exactly this.
+ * Until 2026-10 this was a JSON-RPC error (code 402, error.data), which those
+ * clients do not recognise; scripts/pay-proxy.mjs accepts both shapes.
  * network is CAIP-2 "eip155:8453".
  */
 export function buildPaymentRequiredResponse(
@@ -450,11 +456,9 @@ export function buildPaymentRequiredResponse(
     extensions: { ...(discovery?.extensions ?? {}) },
   };
 
-  // Most MCP clients only surface error.message to the calling agent/LLM —
-  // the rich hints above (fiat.how, oauth.hint, extensions.hint) live in
-  // error.data, which many clients drop. Absent a specific verification
-  // failure (`reason`), fold the actionable next steps into the message
-  // itself so an agent doesn't have to parse error.data to find them.
+  // content[0].text must be the JSON (spec), which an agent reading plain
+  // text won't parse. Absent a specific verification failure (`reason`), a
+  // second text block carries the actionable next steps in prose.
   const message =
     reason ??
     `Payment required: $${config.priceUSDC} USDC on Base per call to ${config.resource}. No x402 wallet? Call the free wallet_setup tool. Prefer a card? Buy credits at https://mcp.toolsnap.app/checkout and send the API key as Authorization: Bearer. Most other tools in this catalog are free.`;
@@ -462,12 +466,21 @@ export function buildPaymentRequiredResponse(
   return {
     jsonrpc: "2.0",
     id: requestId,
-    error: {
-      code: 402,
-      message,
-      data: paymentRequired,
+    result: {
+      isError: true,
+      structuredContent: paymentRequired,
+      content: [
+        { type: "text", text: JSON.stringify(paymentRequired) },
+        { type: "text", text: message },
+      ],
     },
   };
+}
+
+/** True for a JSON-RPC response that is an x402 payment-required tool result. */
+export function isPaymentRequiredResult(rpc: unknown): boolean {
+  const r = (rpc as { result?: { isError?: boolean; structuredContent?: Record<string, unknown> } } | null)?.result;
+  return Boolean(r?.isError && r.structuredContent?.x402Version && Array.isArray(r.structuredContent.accepts));
 }
 
 // ---------------------------------------------------------------------------

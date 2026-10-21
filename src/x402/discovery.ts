@@ -6,7 +6,7 @@
  * bills by, so nothing here can advertise a price the gate won't charge:
  *
  *  1. `extensions.bazaar` declarations — the MCP flavour goes into every MCP
- *     402 (error.data), the HTTP flavour into every HTTP 402 below. Shapes
+ *     402 (structuredContent), the HTTP flavour into every HTTP 402. Shapes
  *     mirror @x402/extensions/bazaar (createMcpDiscoveryExtension /
  *     createBodyDiscoveryExtension) byte for byte.
  *  2. POST /x402/tools/<name> (src/x402/http-door.ts) — an HTTP door onto

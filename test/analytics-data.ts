@@ -215,9 +215,25 @@ console.log("\nhealth");
     return [];
   });
   const data = await getDashboardData(db, false, { kv, fresh: true });
-  const expected = findBrokenTools(win);
+  const expected = findBrokenTools(win).map((b) => ({ ...b, paged: true }));
   assert("sanity: findBrokenTools lists only fetch_extract", expected.length === 1 && expected[0].tool === "fetch_extract", JSON.stringify(expected));
-  assert("health.broken_tools == findBrokenTools over the same window rows", JSON.stringify(data.health.broken_tools) === JSON.stringify(expected), JSON.stringify(data.health.broken_tools));
+  assert("health.broken_tools == findBrokenTools over the same window rows (+paged)", JSON.stringify(data.health.broken_tools) === JSON.stringify(expected), JSON.stringify(data.health.broken_tools));
+  assert("an internal breakage asks no canary and pages", data.health.canary === null && data.health.broken_tools[0].paged === true, JSON.stringify(data.health.canary));
+
+  // Fase 25.19 — errores solo del destino: el canario decide, y el panel lo ensena como el cron lo trata.
+  const upstreamWin: WindowRow[] = Array.from({ length: 6 }, (_, i) => ({
+    tool_name: "fetch_extract", payment_type: "tool_error", detail: "Fetch failed: HTTP 403 Forbidden",
+    client_name: clients[i % 3][0], client: clients[i % 3][1], payer: `anon:${i}`,
+  }));
+  const upDb = fakeD1((sql) => (isHealthWindowQuery(sql) ? upstreamWin : [])).db;
+  const canaryOk = await getDashboardData(upDb, false, { fresh: true, canaryFetch: async () => new Response("ok", { status: 200 }) });
+  assert("upstream-only breakage + canary OK: listed but paged=false, canary in payload",
+    canaryOk.health.broken_tools.length === 1 && canaryOk.health.broken_tools[0].paged === false && canaryOk.health.canary?.ok === true,
+    JSON.stringify(canaryOk.health));
+  const canaryDown = await getDashboardData(upDb, false, { fresh: true, canaryFetch: async () => new Response("", { status: 503 }) });
+  assert("upstream-only breakage + canary failing: paged=true and the canary says why",
+    canaryDown.health.broken_tools[0].paged === true && canaryDown.health.canary?.ok === false && /503/.test(canaryDown.health.canary?.detail ?? ""),
+    JSON.stringify(canaryDown.health));
   assert("health.last_event_ts is MAX(ts)", data.health.last_event_ts === now - 5 * 60_000);
   const crons = data.health.crons;
   assert("crons lists the seven scheduled tasks in order", crons.map((c) => c.name).join() === CRON_TASK_NAMES.join() && crons.length === 7);

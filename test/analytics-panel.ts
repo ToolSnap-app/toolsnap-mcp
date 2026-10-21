@@ -113,6 +113,19 @@ const badH = healthSummary({
   ],
 }, NOW);
 assert("salud con problemas: tool rota + silencio + cron (el recuperado no, el muted va a notas)", badH !== null && !badH.ok && badH.problems.length === 3 && badH.notes.length === 1, JSON.stringify(badH));
+// Fase 25.19 — una tool "rota" que el canario desmiente es nota, no problema; si el canario falla, el problema lo dice.
+const canH = healthSummary({
+  broken_tools: [{ tool: "fetch_extract", total: 7, errors: 7, pct: 100, payers: 3, topDetail: "Fetch failed: HTTP 403 Forbidden", kinds: "caller+upstream", paged: false }],
+  canary: { ok: true, detail: "https://www.cloudflare.com/robots.txt" },
+  last_event_ts: NOW - 60000, crons: [],
+}, NOW);
+assert("canario OK: la tool va a notas y la salud sigue ok", canH !== null && canH.ok && canH.problems.length === 0 && canH.notes.length === 1 && /not paged/.test(canH.notes[0]), JSON.stringify(canH));
+const canBad = healthSummary({
+  broken_tools: [{ tool: "fetch_extract", total: 7, errors: 7, pct: 100, payers: 3, topDetail: "x", kinds: "upstream", paged: true }],
+  canary: { ok: false, detail: "https://www.cloudflare.com/robots.txt → HTTP 503" },
+  last_event_ts: NOW - 60000, crons: [],
+}, NOW);
+assert("canario caido: problema con la prueba del canario", canBad !== null && !canBad.ok && canBad.problems.length === 1 && /canary fetch failing too/.test(canBad.problems[0]), JSON.stringify(canBad));
 const ret = { events_days: 365, connect_days: 60, oldest_event_ts: NOW - 114 * DAY, surface_days: 7 };
 assert("retention: 7d no avisa", retentionParts(ret, 7).length === 0);
 assert("retention: 30d avisa de connects", eq(retentionParts(ret, 30), ["connects and directory coverage cover 7d"]));

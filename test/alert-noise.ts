@@ -24,7 +24,7 @@
 import { isProbeClient } from "../src/analytics/surface.js";
 import { isUpstreamError, classifyToolError } from "../src/alerts/error-classification.js";
 import { maybeAlertError } from "../src/alerts/error-alerts.js";
-import { findBrokenTools, type WindowRow } from "../src/alerts/health.js";
+import { findBrokenTools, canaryDecides, runFetchCanary, type WindowRow } from "../src/alerts/health.js";
 import { httpStatusError } from "../src/tools/safe-fetch.js";
 import { redactDetail } from "../src/analytics/redact.js";
 
@@ -823,6 +823,85 @@ console.log("\nredactDetail");
     drifted === 0,
     `${drifted} casos derivan`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Fase 25.19 — el canario. Reproduce la falsa alarma del 2026-10-21:
+// fetch_extract 7/7 en 6 h, "3 agentes" que eran el mismo escaner (IP de
+// Smithery) con dos client_name y dos UAs, todo 403/404 del destino y
+// cabeceras prohibidas. Sin un fetch real no hay forma de distinguirlo de
+// una tool rota de verdad.
+// ---------------------------------------------------------------------------
+console.log("\ncanario (Fase 25.19)");
+{
+  const row = (over: Partial<WindowRow>): WindowRow => ({
+    tool_name: "fetch_extract",
+    payment_type: "tool_error",
+    detail: "Fetch failed: HTTP 403 Forbidden",
+    client_name: "python-script",
+    client: "python-httpx/0.28.1",
+    payer: "anon:fc8c4578c711",
+    ...over,
+  });
+  const alert = findBrokenTools([
+    row({ client: "python-requests/2.34.2" }),
+    row({ client: "python-requests/2.34.2" }),
+    row({ detail: "`headers` key [redacted] is not allowed. Allowed keys: authorization, cookie, x-api-key." }),
+    row({ detail: "`headers` key [redacted] is not allowed. Allowed keys: authorization, cookie, x-api-key." }),
+    row({ detail: "Fetch failed: HTTP 404 Not Found" }),
+    row({ detail: "`headers` key [redacted] is not allowed. Allowed keys: authorization, cookie, x-api-key." }),
+    row({ client_name: "phase-a" }),
+  ]);
+  assert(
+    "la alerta del 2026-10-21 sigue saliendo del agregado (3 'agentes', caller+upstream)",
+    alert.length === 1 && alert[0].payers === 3 && alert[0].kinds === "caller+upstream",
+    JSON.stringify(alert)
+  );
+  assert("…y es exactamente el caso que el canario decide", canaryDecides(alert[0]?.kinds ?? ""), alert[0]?.kinds ?? "-");
+
+  // Que decide y que no.
+  assert("solo upstream → canario", canaryDecides("upstream"), "expected true");
+  assert("caller+upstream → canario", canaryDecides("caller+upstream"), "expected true");
+  assert("solo caller (el esquema confunde) → sin canario, pagina", !canaryDecides("caller"), "expected false");
+  assert("internal → sin canario, pagina", !canaryDecides("internal"), "expected false");
+  assert("internal+upstream → sin canario, pagina", !canaryDecides("internal+upstream"), "expected false");
+  assert("caller+internal+upstream → sin canario, pagina", !canaryDecides("caller+internal+upstream"), "expected false");
+  assert("sin clase → sin canario", !canaryDecides("—"), "expected false");
+
+  // El fetch del canario, con un fetch falso.
+  const respond = (status: number, body: string) => async () =>
+    new Response(body, { status, statusText: status === 200 ? "OK" : "Nope" });
+  const seq = (...fns: Array<() => Promise<Response>>) => {
+    let i = 0;
+    return (_url: string, _init: RequestInit) => fns[Math.min(i++, fns.length - 1)]();
+  };
+
+  const ok1 = await runFetchCanary(seq(respond(200, "User-agent: *")));
+  assert("un 200 con cuerpo basta", ok1.ok && /cloudflare/.test(ok1.detail), JSON.stringify(ok1));
+
+  const ok2 = await runFetchCanary(seq(respond(403, ""), respond(200, "x")));
+  assert("si el primer destino falla, el segundo decide", ok2.ok && /wikipedia/.test(ok2.detail), JSON.stringify(ok2));
+
+  const empty = await runFetchCanary(seq(respond(200, "")));
+  assert("un 200 sin cuerpo no vale", !empty.ok && /cuerpo vacio/.test(empty.detail), JSON.stringify(empty));
+
+  const down = await runFetchCanary(
+    seq(async () => {
+      throw new Error("Failed to fetch URL: network down");
+    })
+  );
+  assert(
+    "si ningun destino responde, el canario falla y lo explica por URL",
+    !down.ok && (down.detail.match(/network down/g) ?? []).length === 2,
+    JSON.stringify(down)
+  );
+
+  let sawUa = "";
+  await runFetchCanary(async (_url, init) => {
+    sawUa = new Headers(init.headers).get("user-agent") ?? "";
+    return new Response("x", { status: 200 });
+  });
+  assert("el canario se identifica en el UA", /health-canary/.test(sawUa), sawUa);
 }
 
 console.log(`\n${passed}/${passed + failed} tests passed`);

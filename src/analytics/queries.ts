@@ -8,7 +8,7 @@ import { PROBE_CLIENTS, PROBE_NAME_PATTERNS, PROBE_UA_PATTERNS, isProbeClient } 
 import { classifyToolError, isPagedToolError, type ToolErrorClass } from "../alerts/error-classification.js";
 import { PAID_TYPES, PAID_TYPES_SQL, DEPOSIT_TYPES_SQL } from "./payment-types.js";
 import { ANALYTICS_RETENTION_DAYS, CONNECT_RETENTION_DAYS } from "./retention.js";
-import { findBrokenTools, loadHealthWindow } from "../alerts/health.js";
+import { findBrokenTools, loadHealthWindow, canaryFor, brokenToolPages, type BrokenTool, type CanaryFetch, type CanaryResult } from "../alerts/health.js";
 import { readCronStatuses, type CronStatus } from "../alerts/cron-status.js";
 import { cogsList, EXECUTED_SQL, type CogsRow, type ToolCogsRow } from "./cogs.js";
 
@@ -159,8 +159,14 @@ export interface WindowStats {
 
 /** Fase 25.17 — la franja de estado del panel: lo que esta roto AHORA, no lo que paso en 30 d. */
 export interface DashboardHealth {
-  /** findBrokenTools sobre la ventana de 6 h: EXACTAMENTE lo que el cron de salud pagina. */
-  broken_tools: ReturnType<typeof findBrokenTools>;
+  /**
+   * findBrokenTools sobre la ventana de 6 h, con `paged` = lo que el cron de
+   * salud hace con cada una (Fase 25.19: una tool con errores solo del
+   * llamante/destino no pagina si el canario llega; sale como nota).
+   */
+  broken_tools: Array<BrokenTool & { paged: boolean }>;
+  /** El fetch de prueba del cron; null si ninguna tool rota lo pidio. */
+  canary: CanaryResult | null;
   /** Ultimo evento de cualquier tipo (connect incluido): la senal de silencio del servidor. */
   last_event_ts: number | null;
   crons: CronStatus[];
@@ -170,6 +176,8 @@ export interface DashboardHealth {
 export interface DashboardOptions {
   kv?: KVNamespace;
   fresh?: boolean;
+  /** Fase 25.19 — solo tests: sustituye el fetch real del canario. */
+  canaryFetch?: CanaryFetch;
 }
 
 export interface DashboardData {
@@ -438,7 +446,7 @@ export async function getDashboardData(
   // se salta la lectura pero SI escribe la cache: lo recien calculado sirve al
   // siguiente que llegue dentro de los 5 min.
   if (!opts.fresh && hit && Date.now() - hit.at < DASHBOARD_TTL_MS) return hit.data;
-  const data = await computeDashboardData(db, includeInternal, opts.kv);
+  const data = await computeDashboardData(db, includeInternal, opts.kv, opts.canaryFetch);
   dashboardCache.set(key, { at: Date.now(), data });
   return data;
 }
@@ -720,7 +728,8 @@ export function rollupAgents(
 async function computeDashboardData(
   db: D1Database,
   includeInternal: boolean,
-  kv?: KVNamespace
+  kv?: KVNamespace,
+  canaryFetch?: CanaryFetch
 ): Promise<DashboardData> {
   const now = Date.now();
   const since30 = now - MS_30D;
@@ -1175,6 +1184,10 @@ async function computeDashboardData(
   }
   const d30 = byWindow.d30;
 
+  // Fase 25.19 — mismo canario que el cron, solo si alguna tool rota lo pide.
+  const brokenTools = findBrokenTools(healthWindow);
+  const canary = await canaryFor(brokenTools, canaryFetch);
+
   return {
     summary: {
       calls_30d: d30.calls,
@@ -1231,7 +1244,8 @@ async function computeDashboardData(
       surface_days: SURFACE_WINDOW_DAYS,
     },
     health: {
-      broken_tools: findBrokenTools(healthWindow),
+      broken_tools: brokenTools.map((b) => ({ ...b, paged: brokenToolPages(b, canary) })),
+      canary,
       last_event_ts: lastEvent?.ts ?? null,
       crons: cronStatuses,
     },

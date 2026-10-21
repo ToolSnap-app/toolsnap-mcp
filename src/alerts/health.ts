@@ -2,6 +2,7 @@ import type { Env } from "../index.js";
 import { sendTelegram } from "./telegram.js";
 import { classifyToolError } from "./error-classification.js";
 import { isProbeClient } from "../analytics/surface.js";
+import { safeFetch } from "../tools/safe-fetch.js";
 
 /**
  * Fase 25.9 — vigilancia AGREGADA del servidor. El pager por evento
@@ -105,6 +106,89 @@ function agentKey(row: WindowRow, fallback: string): string {
  * si tiene que sonar.
  */
 const BREAKAGE_MIN_CALLS_WITHOUT_TOP = 3;
+
+/**
+ * Fase 25.19 — el canario. Cuarta falsa alarma de esta familia tras 25.10,
+ * 25.11 y 25.12, y la nota de 25.12 ya decia cual era el siguiente paso: no
+ * otro umbral sino comprobar directamente lo que la alerta afirma.
+ *
+ * El 2026-10-21 sono `fetch_extract` 7/7 en 6 h, "3 agentes", clase
+ * caller+upstream, 403 del destino. Los tres agentes eran el mismo escaner de
+ * capacidades saliendo por la IP de Smithery (`anon:fc8c4578c711`) con dos
+ * client_name (`python-script`, `phase-a`) y dos UAs (python-requests,
+ * python-httpx): seis minutos recorriendo todas las tools con URLs que no
+ * existen y cabeceras prohibidas. Apartar al peor agente dejaba 3/3 = 100 %.
+ * Ningun otro cliente real toco la tool en la ventana, asi que no habia un
+ * exito con el que contrastar; la tool respondia perfectamente.
+ *
+ * Cuando TODOS los errores son del llamante o del destino (ni uno `internal`),
+ * la pregunta "esta rota la tool?" tiene una respuesta directa: que el propio
+ * cron haga un fetch a una URL conocida por el mismo camino que usan las tools
+ * (`safeFetch`). Si llega, la red de salida del Worker funciona y los errores
+ * son lo que dicen ser: URLs malas. Si no llega, la alerta sale con esa prueba
+ * anadida, que es justo lo que la vuelve accionable.
+ *
+ * Se decide ANTES del throttle para que una supresion no consuma la clave de
+ * 12 h y tape una caida real una hora despues. Dos destinos por si uno cae; si
+ * fallan los dos, se alerta. Solo se ejecuta cuando una tool ya parece rota,
+ * asi que su coste es cero el 99 % de las pasadas.
+ *
+ * Lo que sigue sin cubrir: un fallo que sea nuestro y no pase por `safeFetch`
+ * (parser, binding) sale como `internal` y pagina sin canario, como antes.
+ */
+const CANARY_URLS = ["https://www.cloudflare.com/robots.txt", "https://www.wikipedia.org/robots.txt"] as const;
+const CANARY_TIMEOUT_MS = 10_000;
+const CANARY_UA = "toolsnap-mcp/1.0 (health-canary; +https://toolsnap.app)";
+
+/** Solo errores del llamante o del destino: el canario decide. Un `internal` pagina siempre. */
+export function canaryDecides(kinds: string): boolean {
+  const k = kinds.split("+");
+  return k.includes("upstream") && !k.includes("internal");
+}
+
+export type CanaryFetch = (url: string, init: RequestInit) => Promise<Response>;
+export interface CanaryResult {
+  ok: boolean;
+  /** La URL que respondio, o el motivo por el que no respondio ninguna. */
+  detail: string;
+}
+
+/** Un fetch de verdad por el camino de las tools. `ok` en cuanto UNA URL devuelve 2xx con cuerpo. */
+export async function runFetchCanary(fetchImpl: CanaryFetch = (url, init) => safeFetch(url, init)): Promise<CanaryResult> {
+  const failures: string[] = [];
+  for (const url of CANARY_URLS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CANARY_TIMEOUT_MS);
+    try {
+      const res = await fetchImpl(url, { signal: controller.signal, headers: { "User-Agent": CANARY_UA } });
+      const body = await res.text();
+      if (res.ok && body.length > 0) return { ok: true, detail: url };
+      failures.push(`${url} → HTTP ${res.status}${res.ok ? " (cuerpo vacio)" : ""}`);
+    } catch (err) {
+      failures.push(`${url} → ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { ok: false, detail: failures.join("; ") };
+}
+
+export type BrokenTool = ReturnType<typeof findBrokenTools>[number];
+
+/** Corre el canario UNA vez y solo si alguna tool rota lo pide; null cuando ninguna. */
+export async function canaryFor(broken: ReadonlyArray<{ kinds: string }>, fetchImpl?: CanaryFetch): Promise<CanaryResult | null> {
+  return broken.some((b) => canaryDecides(b.kinds)) ? runFetchCanary(fetchImpl) : null;
+}
+
+/**
+ * Lo que el cron hace con una tool rota dado el canario: pagina salvo que los
+ * errores sean solo del llamante/destino Y el canario haya llegado. Panel
+ * (`health.broken_tools[].paged`) y pager comparten esta funcion, por la misma
+ * razon que comparten findBrokenTools: si divergen, el panel miente.
+ */
+export function brokenToolPages(b: { kinds: string }, canary: CanaryResult | null): boolean {
+  return !(canaryDecides(b.kinds) && canary?.ok === true);
+}
 
 /**
  * Silencio total. En los 14 dias previos al 2026-09-17 NO hubo ni una sola
@@ -285,7 +369,16 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
   }
 
   // --- 2. Tools rotas ------------------------------------------------------
-  for (const b of findBrokenTools(windowRows)) {
+  // Fase 25.19 — un solo canario por pasada, y solo si alguna tool lo pide.
+  const broken = findBrokenTools(windowRows);
+  const canary = await canaryFor(broken);
+  for (const b of broken) {
+    if (!brokenToolPages(b, canary)) {
+      console.warn(
+        `health: ${b.tool} ${b.errors}/${b.total} (${b.kinds}) pero el canario responde (${canary?.detail}): URLs del llamante, no se pagina`
+      );
+      continue;
+    }
     if (!(await shouldAlert(env.X402_NONCES, `health:broken:${b.tool}`, BREAKAGE_DEDUPE_SEC))) continue;
     await sendTelegram(
       env,
@@ -295,6 +388,7 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
         `agentes afectados: ${b.payers}`,
         `clase: ${b.kinds}`,
         b.topDetail ? `detail mas comun: ${b.topDetail}` : null,
+        canary && !canary.ok ? `canario: el fetch saliente del Worker tampoco llega (${canary.detail})` : null,
         b.kinds === "caller"
           ? `Todos son errores de argumentos: el esquema o la descripcion de la tool esta induciendo a los agentes a llamarla mal. Toca ajustar el MCP.`
           : null,

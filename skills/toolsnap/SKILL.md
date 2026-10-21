@@ -62,7 +62,7 @@ tools (`image_generate`, `image_upscale`, `audio_transcribe`, `text_to_speech`,
 first) settle per call with USDC on Base via x402 — no signup. A funded wallet alone is not enough: the client
 must answer the `402` (sign EIP-3009, retry). Easiest path is the local pay-proxy (the key
 never leaves your machine): see
-<https://github.com/icosaedro-git/toolsnap-mcp#paid-tools--connect-through-the-pay-proxy>.
+<https://github.com/ToolSnap-app/toolsnap-mcp#paid-tools--connect-through-the-pay-proxy>.
 For repeat use, deposit once with `account_deposit` (≥ $0.50) and calls debit off-chain at a
 discount. Call `pricing()` first; never authorize more than the shown price.
 

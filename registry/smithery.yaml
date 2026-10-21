@@ -1,24 +1,23 @@
-# Smithery registry entry — https://smithery.ai
+# Smithery registry entry (reference copy, figures verified 2026-10-21) — https://smithery.ai
 # Submit via: https://smithery.ai/new or GitHub PR to smithery-ai/registry
 # This file is for reference; fill the web form with these values.
 
 name: toolsnap-mcp
 displayName: "ToolSnap MCP — Context-Efficient Microtools"
 description: |
-  MCP server for AI agents. 41 tools total, 35 free — web extraction (incl. JS-rendered
-  pages and pages behind auth), SEO metadata, documents (PDF/CSV/JSON), feeds/sitemaps,
-  link checking, plus utilities (UUID, hash, Base64, URL encode/decode, HTML→Markdown,
-  diff, regex, token count, and more).
-  Flagship fetch_extract: median 98.1% token reduction (53 820 → 2 001 tokens, 11 real
-  pages). Saves $0.156/call at Sonnet pricing; ROI positive even at DeepSeek pricing with
-  $0.01 prepaid (deposit once, debit off-chain, no per-call gas). Pay per call $0.02 USDC
-  on Base via x402, first call free per wallet.
-  The catalog mixes free tools and 3 paid ones (screenshot_url, keyword_research,
-  remove_background); calling a paid tool without a payment payload returns a structured
-  402 with payment options — that is documented, expected behavior, not a broken tool.
+  Deterministic, context-efficient microtools for AI agents. 47 tools total, 36 free;
+  tools/list shows a curated core of 17 and the rest is one free tool_catalog call away.
+  Free flagships: fetch_extract (median 98.1% token reduction, 53,820 → 2,001 tokens,
+  11 real pages) and fetch_html, plus PDF/CSV/JSON queries, HTML→Markdown, sitemaps,
+  feeds, metadata, link checking and utilities.
+  11 paid tools with real per-call cost (no first-call-free): screenshot_url,
+  fetch_rendered, keyword_research ($0.04), remove_background ($0.03), fal.ai media
+  tools (from $0.02; video from $0.08) and csv/json_query_xl ($0.02). USDC on Base via
+  x402, prepaid balance (~33-38% cheaper), or card credits. Calling a paid tool without
+  payment returns a structured 402 with payment options — expected, not a broken tool.
 
 homepage: https://mcp.toolsnap.app
-repository: https://github.com/icosaedro-git/toolsnap-mcp
+repository: https://github.com/ToolSnap-app/toolsnap-mcp
 
 transport:
   type: streamable-http
@@ -37,11 +36,12 @@ pricing:
   model: per-call
   currency: USDC
   network: base
-  pricePerCall: 0.02
-  freeTools: 35
-  prepaidPricePerCall: 0.01
+  pricePerCallRange: "0.02-0.08"
+  freeTools: 36
+  paidTools: 11
+  prepaidDiscount: "33-38%"
   minDeposit: 0.50
-  firstCallFree: true
+  firstCallFree: false
 
 tags:
   - mcp
@@ -54,5 +54,5 @@ tags:
   - cloudflare-workers
 
 author:
-  name: Icosaedro.one
+  name: ToolSnap
   url: https://mcp.toolsnap.app

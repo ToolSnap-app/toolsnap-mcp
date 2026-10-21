@@ -1,6 +1,8 @@
-# Glama.ai MCP submission
-# Submit at: https://glama.ai/mcp/servers/submit (or equivalent)
-# Fill the web form with values below.
+# Glama.ai MCP listing — reference copy
+# Live listing: https://glama.ai/mcp/servers/ToolSnap-app/toolsnap-mcp (claimed; edit at /admin)
+# Glama regenerates its summary from README.md + glama.json; paste the texts below
+# into /admin only if the generated summary drifts from reality.
+# Figures verified live on 2026-10-21 (tool_catalog + pricing).
 
 **Server name:** ToolSnap MCP
 **Endpoint:** https://mcp.toolsnap.app/mcp
@@ -9,28 +11,27 @@
 **Server card:** https://mcp.toolsnap.app/.well-known/mcp.json
 
 **Short description (≤160 chars):**
-AI agent microtools, 41 total, 35 free. fetch_extract: 98.1% token reduction. $0.02/call or $0.01 prepaid on Base. First call free.
+Deterministic microtools for AI agents: 47 tools, 36 free. Free fetch_extract cuts page tokens 98%. Paid tools from $0.02 USDC on Base (x402) or card.
 
 **Full description:**
-Context-efficient MCP server for AI agents. fetch_extract reduces token usage by a
-median 98.1% (53,820 → 2,001 tokens) vs raw HTML — saves ~$0.156/call at Sonnet
-pricing. Pay $0.02 USDC on Base via x402, or $0.01 with prepaid balance (deposit
-once ≥$0.50, calls debit off-chain at half price, no per-call gas). First call free
-per wallet.
+Context-efficient, deterministic MCP server for AI agents — no LLM in the
+extraction loop. tools/list shows a curated core of 17; the full catalog of 47
+sits one free tool_catalog call away and runs via use_tool.
 
-35 of 41 tools are always free — web extraction (fetch_extract, fetch_html,
-html_table_extract), documents/data (pdf_text_extract, csv_query, json_query,
-rss_parse, sitemap_parse), SEO/web (fetch_metadata, fetch_structured, link_check),
-plus general utilities (uuid_generate, hash_text, base64_encode, base64_decode,
-url_encode, url_decode, json_format, timestamp_convert, text_stats, pricing,
-html_to_markdown, extract_structured, diff_text, regex_extract, count_tokens,
-account_balance, account_deposit) and more — discoverable via the free tool_catalog
-tool. 4 tools carry real per-call COGS and are paid: screenshot_url, fetch_rendered
-(server-side browser rendering for JS-heavy pages), keyword_research,
-remove_background. 2 more (csv_query_xl, json_query_xl) are paid file-size tiers
-for oversized CSV/JSON, not COGS-driven.
+36 tools are free, including the flagships fetch_extract (URL → clean text,
+median 98.1% fewer tokens than raw HTML: 53,820 → 2,001 on 11 real pages) and
+fetch_html, plus html_to_markdown, fetch_metadata, pdf_text_extract, csv_query,
+json_query, sitemap_parse, rss_parse, link checking and general utilities.
+
+11 tools are paid because they carry real per-call cost (no first-call-free):
+screenshot_url, fetch_rendered and keyword_research ($0.04), remove_background
+($0.03), fal.ai media tools image_generate, image_upscale, audio_transcribe,
+text_to_speech (from $0.02) and video_generate (from $0.08), and the large-file
+tiers csv_query_xl / json_query_xl ($0.02). Pay per call with USDC on Base via
+x402 (no account), prepay a balance (min $0.50, ~33-38% cheaper per call, no
+per-call gas), or buy fiat credits with a card at https://mcp.toolsnap.app/checkout.
 
 **Categories:** Developer Tools, Web Scraping, Paid
 **Tags:** mcp, x402, usdc, base, fetch, token-reduction, cloudflare-workers
-**Author/org:** Icosaedro.one
-**GitHub:** https://github.com/icosaedro-git/toolsnap-mcp
+**Author/org:** ToolSnap (ToolSnap-app)
+**GitHub:** https://github.com/ToolSnap-app/toolsnap-mcp

@@ -4,10 +4,11 @@ import type { Env } from "../index.js";
  * Fase 25.3 — daily snapshots of ToolSnap's presence on external MCP
  * directories (Smithery, Glama), stored in `directory_stats` (migration
  * 0013). Analytics only sees usage that reaches the Worker; it can't see the
- * funnel *before* the first call — directory installs/useCount. Both
- * registries expose read-only public endpoints (no auth required), so the
- * matching *_API_KEY secrets are optional — sent as a Bearer header only
- * when present, purely for a friendlier rate limit.
+ * funnel *before* the first call — directory installs/useCount. Smithery's
+ * read-only endpoint is public (SMITHERY_API_KEY only buys a friendlier rate
+ * limit); Glama's API requires GLAMA_API_KEY since 2026-10 (401 without it).
+ * Both keys are sent as a Bearer header only when present. GLAMA_SERVER_ID
+ * survived the repo move to ToolSnap-app (only the listing's URL path changed).
  */
 
 const SMITHERY_QUALIFIED_NAME = "icosaedro/toolsnap-mcp";

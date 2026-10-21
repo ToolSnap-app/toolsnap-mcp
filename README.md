@@ -2,7 +2,7 @@
 
 > One connection, superpowers for your agent: deterministic microtools. Pay per call with USDC on Base — no account needed — or buy fiat credits with a card if you'd rather not touch crypto.
 
-[![toolsnap-mcp MCP server](https://glama.ai/mcp/servers/icosaedro-git/toolsnap-mcp/badges/score.svg)](https://glama.ai/mcp/servers/icosaedro-git/toolsnap-mcp)
+[![toolsnap-mcp MCP server](https://glama.ai/mcp/servers/ToolSnap-app/toolsnap-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ToolSnap-app/toolsnap-mcp)
 [![MCP](https://img.shields.io/badge/MCP-streamable--http-6366f1)](https://mcp.toolsnap.app/.well-known/mcp.json)
 [![x402](https://img.shields.io/badge/payment-x402%20v2-orange)](https://x402.org)
 [![Base](https://img.shields.io/badge/network-Base%20mainnet-0052FF)](https://base.org)
@@ -12,7 +12,7 @@
 **Live endpoint:** `https://mcp.toolsnap.app/mcp`  
 **Server card:** [/.well-known/mcp.json](https://mcp.toolsnap.app/.well-known/mcp.json)  
 **Pricing:** [/.well-known/pricing.json](https://mcp.toolsnap.app/.well-known/pricing.json)  
-**Docs:** [toolsnap.app/agents](https://toolsnap.app/agents)
+**Docs:** [mcp.toolsnap.app/docs](https://mcp.toolsnap.app/docs)
 
 ---
 
@@ -142,17 +142,24 @@ curl -X POST https://mcp.toolsnap.app/mcp \
 
 ## Tools
 
-41 tools total. `tools/list` shows a curated core (~19); discover everything else with the free `tool_catalog` tool and run it with `use_tool(name, args)`.
+47 tools total. `tools/list` shows a curated core of 17; discover everything else with the free `tool_catalog` tool and run it with `use_tool(name, args)`.
 
-### Paid (x402) — real per-call COGS only
+### Paid (x402)
 
 | Tool | Description | Price |
 |---|---|---|
 | `screenshot_url` | Capture a page → public image URL. | $0.04 USDC |
+| `fetch_rendered` | Render a JS page (SPA) in a headless browser → clean text. | $0.04 USDC |
 | `keyword_research` | Google Ads volume/CPC/competition via DataForSEO. | $0.04 USDC |
 | `remove_background` | Remove an image's background → transparent PNG URL. | $0.03 USDC |
+| `image_generate` | Text-to-image via fal.ai FLUX. | from $0.02 USDC |
+| `image_upscale` | 2x/4x super-resolution via fal.ai ESRGAN. | from $0.02 USDC |
+| `audio_transcribe` | Speech-to-text via fal.ai Wizper. | from $0.02 USDC |
+| `text_to_speech` | Text-to-speech via fal.ai Kokoro. | from $0.02 USDC |
+| `video_generate` | Async text/image-to-video via fal.ai. | from $0.08 USDC |
+| `csv_query_xl` / `json_query_xl` | Query URL-hosted CSV (5–100 MB) / JSON (5–25 MB). | $0.02 USDC |
 
-No first-call-free: these three tools have real per-call cost, so every call settles from the start. Pay-per-call is $0.03–$0.04 USDC on Base using [x402 v2](https://x402.org) (EIP-3009 `transferWithAuthorization`); prepaid (deposit once, debit off-chain, crypto or [card](https://mcp.toolsnap.app/checkout)) is cheaper per call.
+No first-call-free: these tools have real per-call cost, so every call settles from the start. Media tools are priced per call from your own args (the table shows the floor). Pay-per-call is USDC on Base using [x402 v2](https://x402.org) (EIP-3009 `transferWithAuthorization`); prepaid (deposit once, debit off-chain, crypto or [card](https://mcp.toolsnap.app/checkout)) is cheaper per call.
 
 ### Free (always)
 
@@ -250,7 +257,7 @@ For paid tools or changes to the x402 payment logic, open an issue first.
 
 ---
 
-[![toolsnap-mcp MCP server](https://glama.ai/mcp/servers/icosaedro-git/toolsnap-mcp/badges/card.svg)](https://glama.ai/mcp/servers/icosaedro-git/toolsnap-mcp)
+[![toolsnap-mcp MCP server](https://glama.ai/mcp/servers/ToolSnap-app/toolsnap-mcp/badges/card.svg)](https://glama.ai/mcp/servers/ToolSnap-app/toolsnap-mcp)
 
 ---
 

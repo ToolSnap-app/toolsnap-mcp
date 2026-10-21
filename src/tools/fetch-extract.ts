@@ -101,7 +101,6 @@ export const fetchExtractTool: McpTool = {
     },
     required: ["url"],
   },
-  annotations: { readOnlyHint: true },
   async run(args) {
     const url = args.url;
     if (typeof url !== "string" || (!url.startsWith("http://") && !url.startsWith("https://"))) {

@@ -742,7 +742,6 @@ export const pdfTextExtractTool: McpTool = {
       headers: HEADERS_SCHEMA_PROPERTY,
     },
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("pdf_text_extract is env-aware and must be called via runWithEnv");
   },

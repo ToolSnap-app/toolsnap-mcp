@@ -85,7 +85,6 @@ export const textToSpeechTool: McpTool = {
     },
     required: ["text"],
   },
-  annotations: { destructiveHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

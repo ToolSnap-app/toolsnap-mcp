@@ -745,13 +745,15 @@ export default {
             non_refundable: true,
           },
         },
-        tools: listTools("full").map(({ name, description }) => {
+        tools: listTools("full").map(({ name, title, description, annotations }) => {
           const paid = requiresPayment(name);
-          if (!paid) return { name, description, tier: "free" };
+          if (!paid) return { name, title, description, annotations, tier: "free" };
           const p = getToolPrice(name, env);
           return {
             name,
+            title,
             description,
+            annotations,
             tier: "paid",
             price_usdc: Number(p.payPerCallStr),
             prepaid_price_usdc: Number(p.prepaidStr),

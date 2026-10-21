@@ -1,0 +1,18 @@
+# Build-script policy for pnpm >= 10/11. Without an explicit answer, pnpm 11
+# fails `pnpm install` with ERR_PNPM_IGNORED_BUILDS (exit 1), and `pnpm run`
+# repeats that check before every script. That is what killed Glama's
+# container ("exited with code 1 before responding to ping"): its build runs
+# `pnpm install` then `pnpm run start`.
+#
+# esbuild: tsx (the stdio server) uses it; its postinstall is only an optimiser.
+# workerd: wrangler's runtime, needed only for `wrangler dev`, never for the
+#          stdio server, so its install script stays off.
+allowBuilds:
+  esbuild: true
+  workerd: false
+# pnpm 10 spelling of the same policy.
+onlyBuiltDependencies:
+  - esbuild
+# pnpm 11 re-checks dependencies before every `pnpm run` and prints its status
+# lines to stdout, which would land in the middle of the JSON-RPC stream.
+verifyDepsBeforeRun: false

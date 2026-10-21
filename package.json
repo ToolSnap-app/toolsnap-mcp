@@ -8,7 +8,7 @@
     "dev": "npm run build:site && wrangler dev",
     "deploy": "npm run build:site && wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "start": "bash scripts/start-glama.sh"
+    "start": "tsx scripts/stdio-server.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260827.1",

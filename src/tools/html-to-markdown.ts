@@ -200,7 +200,6 @@ export const htmlToMarkdownTool: McpTool = {
       headers: HEADERS_SCHEMA_PROPERTY,
     },
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("html_to_markdown is env-aware and must be called via runWithEnv");
   },

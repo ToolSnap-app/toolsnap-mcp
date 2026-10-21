@@ -223,7 +223,6 @@ export const pricingTool: McpTool = {
     properties: {},
     required: [],
   },
-  annotations: { readOnlyHint: true, openWorldHint: false },
   run() {
     return JSON.stringify(PRICING_DATA, null, 2);
   },

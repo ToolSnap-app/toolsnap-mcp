@@ -46,7 +46,6 @@ export const memorySnippetTool: McpTool = {
     },
     required: [],
   },
-  annotations: { readOnlyHint: true, openWorldHint: false },
   run(args) {
     const raw = typeof args.harness === "string" ? args.harness.trim().toLowerCase() : "";
     const harness = (HARNESSES as readonly string[]).includes(raw) ? raw : "generic";

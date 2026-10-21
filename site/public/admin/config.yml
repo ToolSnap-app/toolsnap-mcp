@@ -1,6 +1,6 @@
 backend:
   name: github
-  repo: icosaedro-git/toolsnap-mcp
+  repo: ToolSnap-app/toolsnap-mcp
   branch: main
   # Same-origin OAuth: both endpoints live in the main Worker (src/cms-auth.ts)
   # so the popup handshake never crosses origins. Replaced the orphan

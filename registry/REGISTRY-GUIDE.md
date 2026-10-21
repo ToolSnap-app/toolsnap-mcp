@@ -104,7 +104,7 @@ Lista curada de la comunidad x402.
 **URL form:** https://glama.ai/mcp/servers → "Add MCP Server"
 
 Campos:
-- GitHub repo: `https://github.com/icosaedro-git/toolsnap-mcp` *(debe ser público)*
+- GitHub repo: `https://github.com/ToolSnap-app/toolsnap-mcp` *(debe ser público)*
 - **Fichero glama.json** ya existe en la raíz del repo.
 
 Si el repo se hace público, Glama lo indexa automáticamente tras el form.
@@ -115,7 +115,7 @@ Si el repo se hace público, Glama lo indexa automáticamente tras el form.
 **URL form:** https://mcp.directory/submit
 
 Campos:
-- GitHub repo URL: `https://github.com/icosaedro-git/toolsnap-mcp`
+- GitHub repo URL: `https://github.com/ToolSnap-app/toolsnap-mcp`
 - Short description: `Context-efficient MCP microtools. fetch_extract: 98.1% token reduction. $0.02 USDC/call. First call free. 10 free tools.`
 - Email: unairodriguez@proton.me
 

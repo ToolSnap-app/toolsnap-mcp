@@ -15,6 +15,8 @@ import { handleCmsAuthStart, handleCmsAuthCallback } from "./cms-auth.js";
 import { verifyPolarSignature, debugPolarSignature, getOrCreateAccountByEmail, creditOrder } from "./fiat/polar.js";
 import { writeEvent } from "./analytics/logger.js";
 import { handleRestTool } from "./rest-tools.js";
+import { handleX402HttpTool, X402_EXPOSE_HEADERS } from "./x402/http-door.js";
+import { buildWellKnownX402, buildOpenApi, HTTP_TOOL_PREFIX } from "./x402/discovery.js";
 import { looksLikeOAuthToken, verifyOAuthToken, touchOAuthToken } from "./oauth/tokens.js";
 import { runXPublisher } from "./x-agent/publisher.js";
 import { handleTelegramUpdate, type TelegramUpdate } from "./x-agent/telegram-approval.js";
@@ -199,10 +201,11 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-Api-Key, Mcp-Session-Id, Mcp-Protocol-Version, X-Admin-Key, X-ToolSnap-Internal",
+    "Content-Type, Authorization, X-Api-Key, Mcp-Session-Id, Mcp-Protocol-Version, X-Admin-Key, X-ToolSnap-Internal, PAYMENT-SIGNATURE, X-PAYMENT",
   // The server assigns/echoes Mcp-Session-Id on MCP responses (see POST /mcp
-  // below) — browser-based clients need it exposed to read the header.
-  "Access-Control-Expose-Headers": "Mcp-Session-Id",
+  // below) — browser-based clients need it exposed to read the header. The
+  // x402 HTTP door (/x402/tools/*) answers in PAYMENT-REQUIRED/-RESPONSE.
+  "Access-Control-Expose-Headers": `Mcp-Session-Id, ${X402_EXPOSE_HEADERS}`,
 };
 
 function withCors(response: Response): Response {
@@ -1231,6 +1234,19 @@ export default {
         return jsonResponse({ error: "Unauthorized" }, 401);
       }
       return jsonResponse(await getWebhookInfo(env));
+    }
+
+    // x402 discovery (src/x402/discovery.ts): fan-out documents for the x402
+    // indexes, and the HTTP door onto the paid-tool payment gate. Any method
+    // reaches the door, which answers 405 itself.
+    if (method === "GET" && url.pathname === "/.well-known/x402") {
+      return jsonResponse(buildWellKnownX402());
+    }
+    if (method === "GET" && url.pathname === "/openapi.json") {
+      return jsonResponse(buildOpenApi(env));
+    }
+    if (url.pathname.startsWith(HTTP_TOOL_PREFIX)) {
+      return withCors(await handleX402HttpTool(request, env, ctx));
     }
 
     // REST tool endpoint (ADR-003) — any method reaches the handler, which answers 405.

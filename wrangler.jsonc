@@ -38,6 +38,10 @@
       "/upload",
       // ADR-003 — flat REST route for free tools (src/rest-tools.ts).
       "/v1/tools/*",
+      // x402 discovery: HTTP door onto the paid-tool gate + its OpenAPI doc
+      // (src/x402/discovery.ts). /.well-known/x402 is covered below.
+      "/x402/*",
+      "/openapi.json",
       "/admin/*",
       // Fase 22.1b hotfix: X Agent admin API, deliberately OUTSIDE /admin/*
       // (which sits behind a Cloudflare Access application at the edge —

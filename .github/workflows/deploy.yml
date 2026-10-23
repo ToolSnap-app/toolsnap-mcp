@@ -9,6 +9,9 @@ jobs:
   deploy:
     name: Build site + deploy Worker
     runs-on: ubuntu-latest
+    # CLOUDFLARE_API_TOKEN lives in this environment, which only main can
+    # use, so a workflow edited on another branch cannot read it.
+    environment: production
     steps:
       - uses: actions/checkout@v4
 

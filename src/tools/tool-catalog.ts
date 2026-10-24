@@ -103,12 +103,13 @@ async function runToolCatalog(args: Record<string, unknown>, env: Env): Promise<
 
 export const toolCatalogTool: McpTool = {
   name: "tool_catalog",
-  description: "Free. Full catalog. No args → families. family='<id>' → tools. tool='<name>' → detail.",
+  description:
+    "Free, read-only, no network. Browse all 47 tools in 10 families (web, seo, data, documents, images, media, utils, payments, recipes, meta). No args: families with id, label, one-liner, tool count. family='<id>': each tool with name, price, description, notes, inputSchema. tool='<name>': that entry alone; wins over family. Unknown ids error naming the valid families. Run what you find via use_tool.",
   inputSchema: {
     type: "object",
     properties: {
-      family: { type: "string", description: "Family id → its tools." },
-      tool: { type: "string", description: "Tool name → detail." },
+      family: { type: "string", description: "Family id, e.g. 'web', 'data'. Lists its tools with schemas." },
+      tool: { type: "string", description: "Exact tool name, e.g. 'fetch_rendered'. Takes precedence over family." },
     },
     required: [],
   },

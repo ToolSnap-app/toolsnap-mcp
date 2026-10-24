@@ -22,7 +22,7 @@ import { dirname, join } from "node:path";
 import {
   fmt, fmtUsd, fmtPct, zeroFillDaily, bucketWeekly, zeroFillIntraday, bucketIntraday, windowDelta, smitheryDelta,
   paginate, paywallRate, cogsSummary, groupSurface, healthSummary, retentionParts, sanitizeState, seriesForTimeframe,
-  niceMax, formatXLabel, truncatePayer, timeLabel, winKey, classifyDataResponse,
+  niceMax, formatXLabel, partialLabel, truncatePayer, timeLabel, winKey, classifyDataResponse,
 } from "../src/analytics/panel/panel-lib.js";
 import { buildDashboardFixture } from "./_support/dashboard-fixture.js";
 import { WINDOW_KEYS } from "../src/analytics/queries.js";
@@ -66,8 +66,28 @@ const weeks = bucketWeekly(fourteen);
 assert("bucketWeekly descarta los dias sueltos y suma por semana", weeks.length === 2 && weeks[0].value === 28 && weeks[1].value === 77, JSON.stringify(weeks));
 assert("bucketWeekly empieza la semana en su primer dia", weeks[0].day === new Date(NOW - 13 * DAY).toISOString().slice(0, 10));
 const delta = windowDelta(fourteen, 7);
-assert("windowDelta compara con la ventana anterior", delta !== null && delta.pct === 175 && delta.up === true, JSON.stringify(delta));
+// fase 25.21: el ultimo dia (parcial) queda fuera. Dias completos: [0,0,1..13] -> 7..13 = 70 frente a 0..6 = 21.
+assert("windowDelta compara dias completos: deja fuera el dia parcial", delta !== null && delta.pct === 233 && delta.up === true && delta.through === new Date(NOW - DAY).toISOString().slice(0, 10), JSON.stringify(delta));
+const fullDays = fourteen.map(({ day, value }) => ({ day, value }));
+assert("windowDelta sin marca partial usa todos los puntos", eq(windowDelta(fullDays, 7), { pct: 175, up: true, through: fullDays[15].day }), JSON.stringify(windowDelta(fullDays, 7)));
 assert("windowDelta sin base es null", windowDelta(fourteen, 10) === null && windowDelta([{ day: "x", value: 0 }, { day: "y", value: 3 }], 1) === null);
+console.log("dia parcial (fase 25.21)");
+const pd = zeroFillDaily([], "calls", 5, NOW);
+assert("zeroFillDaily marca partial solo el ultimo punto (el dia UTC en curso)", pd.every((p, i) => (i === 4) === (p.partial === true)) && !("partial" in pd[0]), JSON.stringify(pd));
+const atMidnight = zeroFillDaily([], "calls", 5, Date.UTC(2026, 9, 20));
+assert("a medianoche UTC exacta ningun punto es parcial", atMidnight.length === 5 && atMidnight.every((p) => !("partial" in p)) && atMidnight[4].day === "2026-10-20", JSON.stringify(atMidnight));
+const oneMsIn = zeroFillDaily([], "calls", 2, Date.UTC(2026, 9, 20) + 1);
+assert("un milisegundo despues de medianoche ya es parcial", oneMsIn[1].partial === true);
+// Delta estable: un dia a medias no hunde la comparacion. 14 dias completos de 10 + hoy con 1.
+const stable = Array.from({ length: 14 }, (_, i) => ({ day: new Date(NOW - (14 - i) * DAY).toISOString().slice(0, 10), calls: 10 }));
+stable.push({ day: "2026-10-20", calls: 1 });
+const stableSeries = zeroFillDaily(stable, "calls", 15, NOW);
+const stableDelta = windowDelta(stableSeries, 7);
+assert("el delta ignora el dia parcial (10 por dia y hoy con 1 -> 0%, no -13%)", stableDelta !== null && stableDelta.pct === 0 && stableDelta.up === true, JSON.stringify(stableDelta));
+assert("la ventana anterior se alinea sobre dias completos (sin hoy hay 14, con 7+7 sobra 0)", windowDelta(zeroFillDaily(stable, "calls", 14, NOW), 7) === null || windowDelta(zeroFillDaily(stable, "calls", 14, NOW), 7)!.through === "2026-10-19");
+const wk = bucketWeekly(zeroFillDaily([], "calls", 15, NOW));
+assert("bucketWeekly: solo la semana que contiene hoy es parcial", wk.length === 2 && !("partial" in wk[0]) && wk[1].partial === true, JSON.stringify(wk));
+assert("partialLabel: dia, semana y punto completo", partialLabel({ partial: true }, "day") === "today, partial" && partialLabel({ partial: true }, "week") === "includes today, partial" && partialLabel({}, "day") === "" && partialLabel(undefined, "day") === "");
 const intra = zeroFillIntraday([{ ts: Math.floor(NOW / 1800000) * 1800000, calls: 3 }], "calls", 2, 1800000, NOW);
 assert("zeroFillIntraday: 2 h en medias horas, la ultima es ahora", intra.length === 4 && intra[3].value === 3 && intra[0].value === 0);
 assert("bucketIntraday agrupa por factor", eq(bucketIntraday(intra, 2).map((x) => x.value), [0, 3]));
@@ -81,6 +101,13 @@ const last30 = new Set(Array.from({ length: 30 }, (_, i) => new Date(NOW - i * D
 const sum30 = fx.calls_by_day.filter((d) => last30.has(d.day)).reduce((s, d) => s + d.calls, 0);
 assert("seriesForTimeframe 30d: 30 puntos diarios, suma = los 30 dias naturales de calls_by_day", s30.calls.length === 30 && s30.granularity === "day" && s30.callsSum === sum30, `${s30.callsSum} vs ${sum30}`);
 const s1 = seriesForTimeframe(fx, 1, "4h", NOW);
+const lastCalls = s30.calls[29], todayKey = new Date(NOW).toISOString().slice(0, 10);
+assert("seriesForTimeframe 30d: el ultimo punto es hoy y es parcial; los 29 anteriores no", lastCalls.day === todayKey && lastCalls.partial === true && s30.calls.slice(0, 29).every((p) => !("partial" in p)));
+assert("seriesForTimeframe: delta con dias completos, la suma de la tarjeta si incluye hoy", s30.callsDelta === null || s30.callsDelta.through === new Date(NOW - DAY).toISOString().slice(0, 10));
+const s7 = seriesForTimeframe(fx, 7, "1h", NOW);
+assert("seriesForTimeframe 7d: delta sobre dias completos y hoy con pocas llamadas (fixture) no lo hunde", s7.callsDelta !== null && s7.callsDelta.through === new Date(NOW - DAY).toISOString().slice(0, 10) && s7.calls[6].value <= 3 && Math.abs(s7.callsDelta.pct) < 60, JSON.stringify(s7.callsDelta));
+assert("seriesForTimeframe 1y: la ultima semana es parcial", seriesForTimeframe(fx, 365, "1h", NOW).calls[51].partial === true);
+assert("seriesForTimeframe 24h: la serie intradia no lleva marca partial", seriesForTimeframe(fx, 1, "1h", NOW).calls.every((p) => !("partial" in p)));
 assert("seriesForTimeframe 24h a 4h: 6 buckets", s1.calls.length === 6 && s1.granularity === "intraday" && s1.callsDelta === null);
 const s365 = seriesForTimeframe(fx, 365, "1h", NOW);
 assert("seriesForTimeframe 1y: 52 semanas", s365.calls.length === 52 && s365.granularity === "week");
@@ -153,6 +180,11 @@ assert("tipografia: nada de Inter / Space Grotesk / JetBrains Mono como voz de l
 assert("sin em dashes en el texto visible del panel", !html.includes("—") && !/'[^'\n]*—[^'\n]*'/.test(app));
 assert("sin glow ni sombras por defecto", !/text-shadow|backdrop-filter|blur\(|box-shadow:[^;]*\b0 0 \d+px/.test(css) && (css.match(/box-shadow/g) ?? []).length <= 2);
 assert("todos los paneles del HTML se pintan en panel.js", (html.match(/data-panel="([a-z-]+)"/g) ?? []).map((m) => m.slice(12, -1)).every((name) => app.includes(`'${name}'`)));
+
+console.log("dia parcial en el markup (fase 25.21)");
+assert("panel.js dibuja el parcial: tramo discontinuo, punto hueco, barra atenuada y etiqueta en el tooltip", app.includes("line-partial") && app.includes("partial-dot") && app.includes("' partial'") && app.includes("partialLabel(") && css.includes(".line-partial") && css.includes(".partial-dot") && css.includes(".bar-mark.partial"));
+assert("el ultimo valor anotado es el del ultimo punto completo (lastIdx)", app.includes("const lastIdx = hasPartial ? n - 2 : n - 1") && app.includes("series[lastIdx].value"));
+assert("el parcial no usa sombras ni glow en el CSS nuevo", !/partial[^\n]*(shadow|blur|drop-shadow)/.test(css));
 
 console.log("respuesta de /analytics/data (fase 25.20: sesion de Access caducada)");
 {

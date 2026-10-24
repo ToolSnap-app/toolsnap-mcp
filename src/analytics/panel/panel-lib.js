@@ -83,28 +83,48 @@ export function winLabel(days) {
 // Series temporales
 // ---------------------------------------------------------------------------
 
+/**
+ * Serie diaria de `days` dias UTC acabando en el dia de `now`. Fase 25.21: ese
+ * ultimo dia esta en curso, asi que lleva `partial: true` (salvo si `now` es
+ * exactamente medianoche UTC: el dia acaba de empezar y es un 0 sin datos que
+ * mostrar, no un parcial). Los demas puntos no llevan la clave.
+ */
 export function zeroFillDaily(raw, valueKey, days, now = Date.now()) {
   const map = new Map((raw || []).map((r) => [r.day, r[valueKey]]));
   const d = new Date(now);
   const endUTC = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const inProgress = now > endUTC;
   const out = [];
   for (let i = days - 1; i >= 0; i--) {
     const day = new Date(endUTC - i * DAY_MS).toISOString().slice(0, 10);
-    out.push({ day, value: Number(map.get(day) ?? 0) });
+    const point = { day, value: Number(map.get(day) ?? 0) };
+    if (i === 0 && inProgress) point.partial = true;
+    out.push(point);
   }
   return out;
 }
 
-/** Semanas completas, descartando los primeros dias sueltos; `day` = primer dia de la semana. */
+/**
+ * Semanas completas, descartando los primeros dias sueltos; `day` = primer dia de la semana.
+ * La semana que contiene el dia parcial hereda la marca `partial`.
+ */
 export function bucketWeekly(daily) {
   const rem = daily.length % 7;
   const trimmed = rem ? daily.slice(rem) : daily;
   const weeks = [];
   for (let i = 0; i < trimmed.length; i += 7) {
     const chunk = trimmed.slice(i, i + 7);
-    weeks.push({ day: chunk[0].day, value: chunk.reduce((s, c) => s + c.value, 0) });
+    const week = { day: chunk[0].day, value: chunk.reduce((s, c) => s + c.value, 0) };
+    if (chunk.some((c) => c.partial)) week.partial = true;
+    weeks.push(week);
   }
   return weeks;
+}
+
+/** Texto del tooltip para un punto parcial; '' si el punto es completo. */
+export function partialLabel(point, gran) {
+  if (!point || !point.partial) return '';
+  return gran === 'week' ? 'includes today, partial' : 'today, partial';
 }
 
 /** Medias horas del servidor (ts = inicio del bucket, ms) -> serie fija de `hours` horas acabando ahora. */
@@ -134,15 +154,22 @@ export function sumSeries(arr) {
   return arr.reduce((s, x) => s + x.value, 0);
 }
 
-/** Variacion de la ventana actual frente a la anterior del mismo tamano. null si no hay base. */
+/**
+ * Variacion de la ventana actual frente a la anterior del mismo tamano. null si no hay base.
+ * Fase 25.21: se comparan solo dias COMPLETOS. El dia parcial (ultimo punto con
+ * `partial`) queda fuera y las dos ventanas se alinean sobre los dias cerrados:
+ * asi el delta no se hunde cada manana con un dia a medias contra uno entero.
+ * `through` = ultimo dia incluido (el panel lo usa para explicar la base).
+ */
 export function windowDelta(dailyArr, days) {
-  const n = dailyArr.length;
+  const complete = dailyArr.length && dailyArr[dailyArr.length - 1].partial ? dailyArr.slice(0, -1) : dailyArr;
+  const n = complete.length;
   const prevStart = n - days * 2;
   if (prevStart < 0) return null;
-  const curSum = sumSeries(dailyArr.slice(n - days));
-  const prevSum = sumSeries(dailyArr.slice(prevStart, n - days));
+  const curSum = sumSeries(complete.slice(n - days));
+  const prevSum = sumSeries(complete.slice(prevStart, n - days));
   if (prevSum === 0) return null;
-  return { pct: Math.round(((curSum - prevSum) / prevSum) * 100), up: curSum >= prevSum };
+  return { pct: Math.round(((curSum - prevSum) / prevSum) * 100), up: curSum >= prevSum, through: complete[n - 1].day };
 }
 
 /** Delta semanal aproximado de un contador acumulado muestreado ~1/dia (Smithery useCount). */

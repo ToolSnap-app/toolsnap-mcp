@@ -4,7 +4,7 @@
 import {
   PAGE_SIZES, fmt, fmtUsd, fmtPct, fmtMs, esc, timeLabel, truncatePayer, tfLabel, winKey, winLabel,
   seriesForTimeframe, smitheryDelta, niceMax, formatXLabel, formatFullDate, paginate, paywallRate,
-  groupSurface, cogsSummary, funnelRows, healthSummary, retentionParts, sanitizeState, classifyDataResponse,
+  groupSurface, cogsSummary, partialLabel, funnelRows, healthSummary, retentionParts, sanitizeState, classifyDataResponse,
 } from './panel-lib.js';
 
 // ---------------------------------------------------------------------------
@@ -150,6 +150,10 @@ function timeChart(series, opts) {
   const W = Math.max(260, opts.width || 560), H = 210, ML = 48, MR = 14, MT = 14, MB = 26;
   const plotW = W - ML - MR, plotH = H - MT - MB;
   const n = series.length;
+  // Fase 25.21: el ultimo punto puede ser el dia UTC en curso (parcial). El "ultimo valor"
+  // anotado es el del ultimo punto completo; el parcial se dibuja aparte, a su derecha.
+  const hasPartial = !!series[n - 1].partial;
+  const lastIdx = hasPartial ? n - 2 : n - 1;
   const maxVal = Math.max(...series.map((s) => s.value));
   const top = niceMax(maxVal);
   const xAt = (i) => (n === 1 ? ML + plotW / 2 : ML + (i / (n - 1)) * plotW);
@@ -185,21 +189,30 @@ function timeChart(series, opts) {
       const x = xAt(i) - bw / 2, rr = Math.min(4, bw / 2, h);
       // esquinas redondeadas solo arriba (extremo del dato); base recta
       const d = 'M' + r2(x) + ' ' + r2(MT + plotH) + 'V' + r2(y + rr) + 'Q' + r2(x) + ' ' + r2(y) + ' ' + r2(x + rr) + ' ' + r2(y) + 'H' + r2(x + bw - rr) + 'Q' + r2(x + bw) + ' ' + r2(y) + ' ' + r2(x + bw) + ' ' + r2(y + rr) + 'V' + r2(MT + plotH) + 'Z';
-      return '<path class="bar-mark ' + slot + '" data-i="' + i + '" d="' + d + '"/>';
+      return '<path class="bar-mark ' + slot + (s.partial ? ' partial' : '') + '" data-i="' + i + '" d="' + d + '"/>';
     }).join('');
   } else {
-    const pts = series.map((s, i) => r2(xAt(i)) + ',' + r2(yAt(s.value))).join(' ');
-    const area = r2(xAt(0)) + ',' + (MT + plotH) + ' ' + pts + ' ' + r2(xAt(n - 1)) + ',' + (MT + plotH);
-    const lastX = r2(xAt(n - 1)), lastY = r2(yAt(series[n - 1].value));
-    viz = '<polygon class="area ' + slot + '" points="' + area + '"/>'
-      + '<polyline class="line ' + slot + '" points="' + pts + '"/>'
-      + '<circle class="end-dot ' + slot + '" cx="' + lastX + '" cy="' + lastY + '" r="4"/>'
-      + '<text class="end-label" x="' + lastX + '" y="' + (lastY - 10) + '" text-anchor="' + (n > 1 ? 'end' : 'middle') + '">' + esc(fmtV(series[n - 1].value)) + '</text>';
+    const full = series.slice(0, lastIdx + 1);
+    const pts = full.map((s, i) => r2(xAt(i)) + ',' + r2(yAt(s.value))).join(' ');
+    if (lastIdx >= 0) {
+      const area = r2(xAt(0)) + ',' + (MT + plotH) + ' ' + pts + ' ' + r2(xAt(lastIdx)) + ',' + (MT + plotH);
+      const lastX = r2(xAt(lastIdx)), lastY = r2(yAt(series[lastIdx].value));
+      viz = '<polygon class="area ' + slot + '" points="' + area + '"/>'
+        + '<polyline class="line ' + slot + '" points="' + pts + '"/>'
+        + '<circle class="end-dot ' + slot + '" cx="' + lastX + '" cy="' + lastY + '" r="4"/>'
+        + '<text class="end-label" x="' + lastX + '" y="' + (lastY - 10) + '" text-anchor="' + (lastIdx > 0 ? 'end' : 'middle') + '">' + esc(fmtV(series[lastIdx].value)) + '</text>';
+    }
+    if (hasPartial) {
+      const px = r2(xAt(n - 1)), py = r2(yAt(series[n - 1].value));
+      if (lastIdx >= 0) viz += '<line class="line-partial ' + slot + '" x1="' + r2(xAt(lastIdx)) + '" y1="' + r2(yAt(series[lastIdx].value)) + '" x2="' + px + '" y2="' + py + '"/>'
+        ;
+      viz += '<circle class="partial-dot ' + slot + '" cx="' + px + '" cy="' + py + '" r="4"/>';
+    }
   }
 
-  const data = esc(JSON.stringify({ s: series.map((s) => [s.day, s.value]), k: opts.kind, g: opts.granularity, W, H, ML, MR, MT, MB, view: opts.view }));
+  const data = esc(JSON.stringify({ s: series.map((s) => (s.partial ? [s.day, s.value, 1] : [s.day, s.value])), k: opts.kind, g: opts.granularity, W, H, ML, MR, MT, MB, view: opts.view }));
   return '<figure class="chart" aria-label="' + esc(opts.label) + '">'
-    + '<div class="chart-hit" tabindex="0" role="img" aria-label="' + esc(opts.label + ', ' + n + ' points, latest ' + fmtV(series[n - 1].value)) + '" data-chart="' + data + '">'
+    + '<div class="chart-hit" tabindex="0" role="img" aria-label="' + esc(opts.label + ', ' + n + ' points, latest ' + (hasPartial && lastIdx >= 0 ? fmtV(series[lastIdx].value) + ' complete, ' + fmtV(series[n - 1].value) + ' so far today' : fmtV(series[n - 1].value))) + '" data-chart="' + data + '">'
     + '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" aria-hidden="true">'
     + grid + viz + xLabels
     + '<line class="guide" x1="0" y1="' + MT + '" x2="0" y2="' + (MT + plotH) + '" visibility="hidden"/>'
@@ -226,6 +239,8 @@ function chartPoint(hit, idx) {
   const v = document.createElement('div'); v.className = 'tip-v'; v.textContent = fmtV(c.s[i][1]) + (c.k === 'usd' ? '' : ' calls');
   const d = document.createElement('div'); d.className = 'tip-d'; d.textContent = formatFullDate(c.s[i][0], c.g);
   tip.append(v, d);
+  const pl = partialLabel({ partial: c.s[i][2] === 1 }, c.g);
+  if (pl) { const p = document.createElement('div'); p.className = 'tip-p'; p.textContent = pl; tip.append(p); }
   tip.hidden = false;
   const leftPct = (x / c.W) * 100;
   tip.style.left = leftPct + '%';
@@ -293,13 +308,16 @@ function renderKpis(d, w, s) {
     const el = $('[data-kpi="' + name + '"]');
     $('.num', el).textContent = value;
     $('.delta', el).innerHTML = deltaHtml(delta);
+    // Fase 25.21: el delta compara dias completos (sin hoy); la cifra grande si suma hoy.
+    if (delta && delta.through) $('.delta', el).title = 'Last ' + state.days + ' full days to ' + formatFullDate(delta.through, 'day') + ' vs the ' + state.days + ' before. Today is left out until it ends.';
+    else $('.delta', el).removeAttribute('title');
     $('.delta', el).className = 'delta' + (delta ? (delta.up ? ' up' : ' down') : '');
     $('.win', el).textContent = label;
     if (sub !== undefined) $('.kpi-sub', el).textContent = sub;
     el.dataset.state = 'ready';
   };
-  kpi('calls', fmt(s.callsSum, 0), s.callsDelta, undefined, tf);
-  kpi('revenue', fmtUsd(s.revenueSum), s.revenueDelta, undefined, tf);
+  kpi('calls', fmt(s.callsSum, 0), s.callsDelta, 'MCP tool calls' + (s.callsDelta ? ' · change on full days, today left out' : ''), tf);
+  kpi('revenue', fmtUsd(s.revenueSum), s.revenueDelta, 'usage, USDC (credit purchases excluded)' + (s.revenueDelta ? ' · change on full days' : ''), tf);
   const anon = w.unique_anon_agents || 0;
   kpi('agents', fmt(w.unique_payers + anon, 0), null,
     fmt(w.unique_payers, 0) + ' identified · ' + fmt(anon, 0) + ' anonymous · ' + fmt(d.summary.returning_agents_7d || 0, 0) + ' returning in 7d', wl);

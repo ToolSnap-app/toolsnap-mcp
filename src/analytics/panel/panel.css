@@ -275,6 +275,11 @@ main[aria-busy="true"] .panel, main[aria-busy="true"] .kpi { opacity: 0.55; tran
 .chart .s1 { fill: var(--s1); stroke: var(--s1); }
 .chart .s3 { fill: var(--s3); stroke: var(--s3); }
 .chart .line.s1, .chart .line.s3 { fill: none; }
+/* Fase 25.21: el dia UTC en curso es parcial; mismo color, trazo discontinuo, relleno atenuado. */
+.chart .line-partial.s1, .chart .line-partial.s3 { fill: none; stroke-width: 2; stroke-dasharray: 4 4; stroke-linecap: butt; }
+.chart .partial-dot.s1, .chart .partial-dot.s3 { fill: var(--surface); stroke-width: 2; }
+.chart .bar-mark.partial { fill-opacity: 0.35; stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .bar-mark.partial.lit { fill-opacity: 0.55; filter: none; }
 .tip {
   position: absolute;
   top: 6px;
@@ -290,6 +295,7 @@ main[aria-busy="true"] .panel, main[aria-busy="true"] .kpi { opacity: 0.55; tran
 }
 .tip-v { font-weight: 600; font-variant-numeric: tabular-nums; }
 .tip-d { color: var(--text-2); font-size: 12px; }
+.tip-p { color: var(--text-3); font-size: 12px; }
 
 /* --- barras horizontales -------------------------------------------------- */
 .bars { display: grid; gap: 7px; }

@@ -130,6 +130,7 @@ main[aria-busy="true"] .panel, main[aria-busy="true"] .kpi { opacity: 0.55; tran
   gap: 10px;
   align-items: baseline;
 }
+.notice .btn { margin-left: auto; }
 
 /* --- barra: pestanas y controles ----------------------------------------- */
 .bar {

@@ -4,13 +4,19 @@
 import {
   PAGE_SIZES, fmt, fmtUsd, fmtPct, fmtMs, esc, timeLabel, truncatePayer, tfLabel, winKey, winLabel,
   seriesForTimeframe, smitheryDelta, niceMax, formatXLabel, formatFullDate, paginate, paywallRate,
-  groupSurface, cogsSummary, funnelRows, healthSummary, retentionParts, sanitizeState,
+  groupSurface, cogsSummary, funnelRows, healthSummary, retentionParts, sanitizeState, classifyDataResponse,
 } from './panel-lib.js';
 
 // ---------------------------------------------------------------------------
 // Estado
 // ---------------------------------------------------------------------------
 const LS_KEY = 'ts_panel';
+// Fase 25.20 — marca de una recarga pedida por el boton refresh con la sesion
+// de Access caducada: al volver, la primera carga salta la cache del servidor.
+const RELOAD_FRESH_KEY = 'ts_panel_reload_fresh';
+// true mientras esta carga venga de esa recarga: si Access sigue sin sesion, no
+// se recarga otra vez (evita un bucle si el login de Access no se completa).
+let reloadedForSession = false;
 const DEFAULTS = {
   days: 30,
   view: 'line',
@@ -58,6 +64,23 @@ function setPanel(name, html, state = 'ready') {
 function setEmpty(name, text) { setPanel(name, '<p class="state">' + esc(text) + '</p>', 'empty'); }
 function setError(name, message) {
   setPanel(name, '<p class="state state-error"><span class="mark danger"></span><span>' + esc(message) + '</span></p>', 'error');
+}
+/** Aviso de arriba del panel. `signIn` anade el boton que vuelve a entrar por Access. */
+function showNotice(level, text, signIn) {
+  const notice = $('#notice');
+  notice.innerHTML = '<span class="mark ' + (level === 'info' ? 'muted' : 'danger') + '"></span><span>' + esc(text) + '</span>'
+    + (signIn ? '<button type="button" class="btn" data-signin="1">sign in again</button>' : '');
+  notice.hidden = false;
+}
+/** Sin datos previos: cada tarjeta dice que no tiene datos; el detalle va en el aviso de arriba. */
+function markNotLoaded() {
+  $$('[data-panel]').forEach((p) => setError(p.dataset.panel, 'not loaded'));
+  $$('[data-kpi]').forEach((k) => { k.dataset.state = 'error'; $('.num', k).textContent = '–'; });
+}
+/** Recarga la pagina: la navegacion pasa por el login de Access y vuelve aqui. */
+function signInAgain(fresh) {
+  if (fresh) { try { sessionStorage.setItem(RELOAD_FRESH_KEY, '1'); } catch (e) { /* private mode */ } }
+  location.reload();
 }
 /** Anchos de barras desde data-w: el markup no lleva estilos inline, los aplica el DOM. */
 function applyWidths(root) {
@@ -514,6 +537,7 @@ $('#main').addEventListener('click', (ev) => {
   const btn = ev.target.closest('button');
   if (!btn || btn.disabled) return;
   const ds = btn.dataset;
+  if (ds.signin) { signInAgain(true); return; }
   if (ds.tab) { state.tab = ds.tab; saveState(); renderControls(); if (lastData) render(lastData); return; }
   if (ds.days) { state.days = Number(ds.days); saveState(); if (lastData) render(lastData); else renderControls(); return; }
   if (ds.granularity) { state.granularity = ds.granularity; saveState(); if (lastData) render(lastData); else renderControls(); return; }
@@ -559,28 +583,40 @@ async function load(force) {
     const query = [];
     if (state.internal) query.push('include_internal=1');
     if (force === true) query.push('fresh=1');
-    const res = await fetch('/analytics/data' + (query.length ? '?' + query.join('&') : ''));
-    if (!res.ok) {
-      const msg = res.status === 401 ? 'Cloudflare Access session expired: reload the page to sign in again.'
-        : res.status === 502 ? 'D1 did not answer (server error). Try again in a minute.'
-        : 'HTTP ' + res.status + ' while loading the data.';
-      throw new Error(msg);
+    // redirect:'manual': si Access ya no tiene sesion, su 302 a otro origen llega
+    // como `opaqueredirect` en vez de reventar en un "Failed to fetch" ambiguo.
+    const res = await fetch('/analytics/data' + (query.length ? '?' + query.join('&') : ''), { redirect: 'manual' });
+    const contentType = res.headers.get('content-type') || '';
+    let body = null;
+    if (/json/i.test(contentType)) { try { body = await res.json(); } catch (e) { body = null; } }
+    const verdict = classifyDataResponse({ type: res.type, status: res.status, ok: res.ok, contentType }, body);
+    if (verdict.kind === 'expired') {
+      if (force === true && !reloadedForSession) {
+        // El usuario ha pedido datos frescos: volver a entrar por Access y cargar en fresco al volver.
+        showNotice('info', verdict.message + ' · signing in again…');
+        updated.textContent = 'session expired';
+        signInAgain(true);
+        return;
+      }
+      showNotice('danger', verdict.message + '.', true);
+      updated.textContent = lastData ? 'session expired · showing previous data' : 'session expired';
+      if (!lastData) markNotLoaded();
+      return;
     }
-    const data = await res.json();
+    if (verdict.kind !== 'ok') throw new Error(verdict.message);
+    const data = body;
+    reloadedForSession = false;
     notice.hidden = true;
     render(data);
     lastLoad = Date.now();
     updated.textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (e) {
-    const msg = e && e.message ? e.message : String(e);
-    notice.innerHTML = '<span class="mark danger"></span><span>' + esc(msg) + '</span>';
-    notice.hidden = false;
+    const raw = e && e.message ? e.message : String(e);
+    // Con redirect:'manual' un TypeError aqui es red caida o CORS, no Access.
+    const msg = /failed to fetch|networkerror|load failed/i.test(raw) ? 'Could not reach the server (offline?): ' + raw : raw;
+    showNotice('danger', msg);
     updated.textContent = lastData ? 'showing previous data' : 'not loaded';
-    if (!lastData) {
-      // El detalle va en el aviso de arriba; cada tarjeta solo dice que no tiene datos.
-      $$('[data-panel]').forEach((p) => setError(p.dataset.panel, 'not loaded'));
-      $$('[data-kpi]').forEach((k) => { k.dataset.state = 'error'; $('.num', k).textContent = '–'; });
-    }
+    if (!lastData) markNotLoaded();
   } finally {
     btn.disabled = false;
     btn.setAttribute('aria-busy', 'false');
@@ -589,7 +625,13 @@ async function load(force) {
 }
 
 renderControls();
-load();
+let reloadFresh = false;
+try {
+  reloadFresh = sessionStorage.getItem(RELOAD_FRESH_KEY) === '1';
+  if (reloadFresh) sessionStorage.removeItem(RELOAD_FRESH_KEY);
+} catch (e) { /* private mode */ }
+reloadedForSession = reloadFresh;
+load(reloadFresh);
 
 // Refresco al VOLVER a la pestana, solo si lo que se ve tiene mas de 15 minutos.
 document.addEventListener('visibilitychange', () => {

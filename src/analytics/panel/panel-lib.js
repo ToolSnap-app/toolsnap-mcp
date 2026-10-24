@@ -340,3 +340,29 @@ export function sanitizeState(saved, defaults) {
   }
   return s;
 }
+
+// ---------------------------------------------------------------------------
+// Respuesta de /analytics/data (fase 25.20). Con la sesion de Access caducada,
+// el edge contesta un 302 hacia otro origen: con redirect:'manual' llega como
+// `opaqueredirect` (status 0); con follow seria un TypeError "Failed to fetch"
+// que no distingue "sin sesion" de "sin red". El panel pasa aqui la forma de la
+// respuesta y el JSON ya leido (si lo habia) y actua segun `kind`.
+// ---------------------------------------------------------------------------
+export function classifyDataResponse(res, body) {
+  const type = res && res.type;
+  const status = Number((res && res.status) || 0);
+  const ct = String((res && res.contentType) || '');
+  if (type === 'opaqueredirect' || status === 0 || status === 401 || status === 403) {
+    return { kind: 'expired', message: 'Cloudflare Access session expired' };
+  }
+  if (status === 503) {
+    const quota = body && body.reason === 'database quota';
+    const until = quota && body.retry_after_utc ? ' until ' + timeLabel(Date.parse(body.retry_after_utc)) + ' UTC' : '';
+    return { kind: 'unavailable', message: quota ? 'D1 daily read quota exhausted' + until + '. The panel will work again after the reset.' : 'D1 is unavailable right now. Try again in a few minutes.' };
+  }
+  if (status === 502) return { kind: 'http', message: 'D1 did not answer (server error). Try again in a minute.' };
+  if (!(res && res.ok)) return { kind: 'http', message: 'HTTP ' + status + ' while loading the data.' };
+  if (!/json/i.test(ct)) return { kind: 'expired', message: 'Cloudflare Access session expired (got a sign-in page instead of data)' };
+  if (!body || typeof body !== 'object') return { kind: 'http', message: 'The server answered without data.' };
+  return { kind: 'ok', message: '' };
+}

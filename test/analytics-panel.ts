@@ -22,7 +22,7 @@ import { dirname, join } from "node:path";
 import {
   fmt, fmtUsd, fmtPct, zeroFillDaily, bucketWeekly, zeroFillIntraday, bucketIntraday, windowDelta, smitheryDelta,
   paginate, paywallRate, cogsSummary, groupSurface, healthSummary, retentionParts, sanitizeState, seriesForTimeframe,
-  niceMax, formatXLabel, truncatePayer, timeLabel, winKey,
+  niceMax, formatXLabel, truncatePayer, timeLabel, winKey, classifyDataResponse,
 } from "../src/analytics/panel/panel-lib.js";
 import { buildDashboardFixture } from "./_support/dashboard-fixture.js";
 import { WINDOW_KEYS } from "../src/analytics/queries.js";
@@ -153,6 +153,23 @@ assert("tipografia: nada de Inter / Space Grotesk / JetBrains Mono como voz de l
 assert("sin em dashes en el texto visible del panel", !html.includes("—") && !/'[^'\n]*—[^'\n]*'/.test(app));
 assert("sin glow ni sombras por defecto", !/text-shadow|backdrop-filter|blur\(|box-shadow:[^;]*\b0 0 \d+px/.test(css) && (css.match(/box-shadow/g) ?? []).length <= 2);
 assert("todos los paneles del HTML se pintan en panel.js", (html.match(/data-panel="([a-z-]+)"/g) ?? []).map((m) => m.slice(12, -1)).every((name) => app.includes(`'${name}'`)));
+
+console.log("respuesta de /analytics/data (fase 25.20: sesion de Access caducada)");
+{
+  const c = (res: Record<string, unknown>, body?: unknown) => classifyDataResponse(res, body);
+  assert("302 de Access con redirect:'manual' (opaqueredirect, status 0) → expired", c({ type: "opaqueredirect", status: 0, ok: false, contentType: "" }).kind === "expired");
+  assert("401 del Worker (sin cabecera de Access) → expired", c({ type: "basic", status: 401, ok: false, contentType: "application/json" }).kind === "expired");
+  assert("200 con HTML (pagina de login) → expired", c({ type: "basic", status: 200, ok: true, contentType: "text/html; charset=utf-8" }).kind === "expired");
+  const q = c({ type: "basic", status: 503, ok: false, contentType: "application/json" }, { error: "temporarily_unavailable", reason: "database quota", retry_after_utc: "2026-10-26T00:00:00.000Z" });
+  assert("503 de la fase E con cuota → unavailable y dice hasta cuando", q.kind === "unavailable" && /quota/.test(q.message) && /00:00/.test(q.message), q.message);
+  assert("503 sin cuerpo → unavailable generico", c({ type: "basic", status: 503, ok: false, contentType: "" }).kind === "unavailable");
+  assert("502 → http con mensaje de D1", c({ type: "basic", status: 502, ok: false, contentType: "" }).message.startsWith("D1 did not answer"));
+  assert("200 JSON con cuerpo → ok", c({ type: "basic", status: 200, ok: true, contentType: "application/json" }, { kpis: {} }).kind === "ok");
+  assert("200 JSON sin cuerpo → http", c({ type: "basic", status: 200, ok: true, contentType: "application/json" }, null).kind === "http");
+  assert("panel.js pide los datos con redirect:'manual'", /fetch\('\/analytics\/data'[^\n]*redirect: 'manual'/.test(app));
+  assert("panel.js ofrece volver a entrar (boton delegado data-signin) y recarga en fresco", app.includes('data-signin="1"') && app.includes("ds.signin") && app.includes("RELOAD_FRESH_KEY") && app.includes("location.reload()"));
+  assert("panel.js no recarga en bucle: la recarga automatica exige !reloadedForSession", app.includes("force === true && !reloadedForSession") && app.includes("reloadedForSession = reloadFresh"));
+}
 
 console.log("fixture con la forma de DashboardData");
 assert("fixture: tres ventanas con cogs", WINDOW_KEYS.every((k) => Array.isArray(fx.by_window[k].cogs) && Array.isArray(fx.by_window[k].top_tools)));

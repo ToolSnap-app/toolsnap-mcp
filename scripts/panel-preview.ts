@@ -42,7 +42,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith("/scenario/")) {
       const s = url.pathname.slice("/scenario/".length);
       if (s === "ok" || s === "problems" || s === "empty") { scenario = s; forcedStatus = 0; }
-      else if (s === "502" || s === "401") { forcedStatus = Number(s); }
+      else if (s === "502" || s === "401" || s === "302") { forcedStatus = Number(s); }
       res.writeHead(302, { location: "/analytics" });
       res.end();
       return;
@@ -51,6 +51,13 @@ const server = createServer(async (req, res) => {
       const s = url.searchParams.get("scenario");
       if (s === "ok" || s === "problems" || s === "empty") scenario = s;
       const status = Number(url.searchParams.get("status") || forcedStatus);
+      if (status === 302) {
+        // Fase 25.20 — lo que hace Cloudflare Access sin sesion: 302 a otro origen.
+        // El panel lo pide con redirect:'manual' y recibe un opaqueredirect.
+        res.writeHead(302, { location: "https://example.cloudflareaccess.com/cdn-cgi/access/login/" });
+        res.end();
+        return;
+      }
       if (status) {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "forced " + status }));

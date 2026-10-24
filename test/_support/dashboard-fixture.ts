@@ -226,6 +226,13 @@ export function buildDashboardFixture(now = Date.now(), opts: FixtureOptions = {
       byDay.set(k, { calls, revenue: Math.round(calls * 0.16 * r() * 100) / 100 });
     }
   }
+  if (scenario !== "empty") {
+    // Fase 25.21: el dia UTC en curso llega a medias; con pocas llamadas el panel debe
+    // dibujarlo como parcial en vez de como un precipicio.
+    const today = byDay.get(dayKey(now)) ?? { calls: 0, revenue: 0 };
+    const calls = Math.min(today.calls, 3);
+    byDay.set(dayKey(now), { calls, revenue: today.calls ? Math.round(today.revenue * (calls / today.calls) * 100) / 100 : 0 });
+  }
   const days = Array.from(byDay.keys()).sort();
   const calls_by_day = days.map((day) => ({ day, calls: byDay.get(day)!.calls }));
   const revenue_by_day = days.map((day) => ({ day, revenue: Math.round(byDay.get(day)!.revenue * 1e6) / 1e6 }));

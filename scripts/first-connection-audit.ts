@@ -32,6 +32,13 @@
  *    annotations.title (older clients, Glama TDQS, Anthropic Software
  *    Directory Policy 5E). Required for directory listing, not prose; the
  *    hint keys that equal the spec defaults stay omitted to keep this small.
+ *  - 2026-10-24: 3,250 — deliberate raise (+~332 measured) for the five
+ *    lowest-scoring core tools in Glama's TDQS of v0.1.2 (B, 3.6/5; the June
+ *    A, 4.6, had longer descriptions): memory_snippet, json_query, fetch_html,
+ *    html_to_markdown, pdf_text_extract. Each now states what it returns, its
+ *    limits and what it does not do, and its parameters say format/limits.
+ *    Spend is on accuracy (Anthropic Directory Policy §2: precise, no pushing
+ *    to other tools), not marketing; the other 12 tools are untouched.
  *
  * Run:  npx tsx scripts/first-connection-audit.ts
  */
@@ -40,7 +47,7 @@ import { assertCatalogComplete } from "../src/tools/catalog.js";
 import { buildServerInstructions } from "../src/mcp/server.js";
 import type { Env } from "../src/index.js";
 
-const TOKEN_BUDGET = 2_900;
+const TOKEN_BUDGET = 3_250;
 
 /** Rough token estimate: chars / 4 (same heuristic used across the project docs). */
 function estimateTokens(s: string): number {

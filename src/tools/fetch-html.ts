@@ -46,12 +46,13 @@ function cleanHtml(html: string): string {
 
 export const fetchHtmlTool: McpTool = {
   name: "fetch_html",
-  description: "Fetch a URL, return clean HTML (structure kept, scripts/styles stripped). Free. Site migration.",
+  description:
+    "Free, read-only. Fetch a page and return its HTML minus scripts, styles, svg, iframes, comments and inline handlers; tags and attributes stay, so structure is readable. For inspecting or rebuilding markup, not plain text (fetch_extract gives that). Runs no JavaScript: SPAs return an empty shell. Cut at maxChars with a marker.",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "Page URL." },
-      maxChars: { type: "number", description: `Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
+      url: { type: "string", description: "http(s) page URL. Private addresses are refused." },
+      maxChars: { type: "number", description: `Output cap, chars. Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
       headers: HEADERS_SCHEMA_PROPERTY,
     },
     required: ["url"],

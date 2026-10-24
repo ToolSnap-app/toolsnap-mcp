@@ -15,6 +15,7 @@ import { handleCmsAuthStart, handleCmsAuthCallback } from "./cms-auth.js";
 import { verifyPolarSignature, debugPolarSignature, getOrCreateAccountByEmail, creditOrder } from "./fiat/polar.js";
 import { writeEvent } from "./analytics/logger.js";
 import { handleRestTool } from "./rest-tools.js";
+import { isD1Unavailable, d1UnavailableResponse, d1UnavailableRpc } from "./d1-errors.js";
 import { looksLikeOAuthToken, verifyOAuthToken, touchOAuthToken } from "./oauth/tokens.js";
 import { runXPublisher } from "./x-agent/publisher.js";
 import { handleTelegramUpdate, type TelegramUpdate } from "./x-agent/telegram-approval.js";
@@ -550,8 +551,27 @@ hosted URLs are more private than either, since nothing is ever written to stora
 `;
 }
 
-export default {
+const handler = {
+  // Fase E — last-resort edge: a D1 outage/quota error that escaped a handler
+  // becomes a clear 503 (JSON-RPC -32000 on MCP paths) instead of error 1101.
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    try {
+      return await handler.fetchInner(request, env, ctx);
+    } catch (err) {
+      if (!isD1Unavailable(err)) throw err;
+      console.warn("D1 unavailable:", err instanceof Error ? err.message : String(err));
+      if (new URL(request.url).pathname.startsWith("/mcp")) {
+        return withCors(
+          new Response(JSON.stringify(d1UnavailableRpc(null)), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Retry-After": d1UnavailableResponse().headers.get("Retry-After")! },
+          })
+        );
+      }
+      return withCors(d1UnavailableResponse());
+    }
+  },
+  async fetchInner(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
 
@@ -887,6 +907,7 @@ export default {
         const data = await getDashboardData(env.PREPAID_DB, includeInternal, { kv: env.X402_NONCES, fresh });
         return jsonResponse(data);
       } catch (err) {
+        if (isD1Unavailable(err)) return withCors(d1UnavailableResponse());
         const message = err instanceof Error ? err.message : String(err);
         return jsonResponse({ error: message }, 502);
       }
@@ -1357,3 +1378,5 @@ export default {
     ctx.waitUntil(runTask("analytics-daily", rollupAnalyticsDaily(env)));
   },
 };
+
+export default handler;

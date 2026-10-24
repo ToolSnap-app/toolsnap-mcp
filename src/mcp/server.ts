@@ -33,6 +33,7 @@ import {
 } from "../x402/prepaid.js";
 import { writeEvent, type AnalyticsEvent } from "../analytics/logger.js";
 import { classifySurface, persistSessionClient, readSessionClient, anonPayerId } from "../analytics/surface.js";
+import { isD1Unavailable, d1UnavailableRpc } from "../d1-errors.js";
 import { verifyApiKey, touchKey, accountAddress, accountExists, type VerifiedKey } from "../fiat/keys.js";
 import type { VerifiedOAuthToken } from "../oauth/tokens.js";
 import { VIDEO_PAYMENT_CONTEXT_KEY, type VideoPaymentContext } from "../tools/video-generate.js";
@@ -1409,18 +1410,27 @@ export async function handleMcpRequest(
     return { response: JSON.stringify(err), status: 400 };
   }
 
-  const result = await dispatch(
-    request,
-    env,
-    isAdmin,
-    ctx,
-    clientUA,
-    sessionId,
-    isInternal,
-    rawApiKey,
-    oauthIdentity,
-    clientIp
-  );
+  let result: JsonRpcResponse | null;
+  try {
+    result = await dispatch(
+      request,
+      env,
+      isAdmin,
+      ctx,
+      clientUA,
+      sessionId,
+      isInternal,
+      rawApiKey,
+      oauthIdentity,
+      clientIp
+    );
+  } catch (err) {
+    // Fase E — D1 out of quota/unavailable: readable JSON-RPC error, not a 1101.
+    if (!isD1Unavailable(err)) throw err;
+    console.warn("D1 unavailable in dispatch:", err instanceof Error ? err.message : String(err));
+    if (request.id === undefined) return { response: null, status: 202 };
+    return { response: JSON.stringify(d1UnavailableRpc(request.id ?? null)), status: 200 };
+  }
 
   if (result === null) {
     // Notification — no response body

@@ -119,12 +119,13 @@ async function fetchSitemap(url: string): Promise<string> {
 
 export const sitemapParseTool: McpTool = {
   name: "sitemap_parse",
-  description: "Fetch/parse an XML sitemap into JSON. Enumerate a site's pages.",
+  description:
+    "Free, read-only. Fetch one XML sitemap and return JSON. A urlset gives urls[] (loc, lastmod, changefreq, priority, plus image/news extensions), urlCount and truncated. A sitemap index gives type 'sitemapindex' and sitemaps[] with the child URLs; children are not fetched, call again per child. Uncompressed XML only, no .gz. Errors on non-2xx, 10 s timeout or private hosts.",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "Sitemap URL." },
-      maxUrls: { type: "number", description: `Max ${MAX_URLS}.` },
+      url: { type: "string", description: "sitemap.xml or sitemap index URL, http(s), uncompressed." },
+      maxUrls: { type: "number", description: `Default 100, max ${MAX_URLS}; urlCount still reports the full total. Ignored for a sitemap index.` },
     },
     required: ["url"],
   },

@@ -39,6 +39,13 @@
  *    limits and what it does not do, and its parameters say format/limits.
  *    Spend is on accuracy (Anthropic Directory Policy §2: precise, no pushing
  *    to other tools), not marketing; the other 12 tools are untouched.
+ *  - 2026-10-25: 3,900 — second round (+647 measured) for Glama's TDQS of
+ *    v0.1.4 (4.1/5: the five rewritten tools went to 4.3-4.9, the untouched
+ *    ones kept 3.5-3.8). Same recipe on the six lowest: rss_parse,
+ *    sitemap_parse, csv_query, tool_catalog, use_tool, pricing. Glama's
+ *    per-tool notes asked for the output shape, truncation semantics,
+ *    sitemap-index handling, what a family is and how use_tool forwards
+ *    args and errors; each description now says so. Other 11 untouched.
  *
  * Run:  npx tsx scripts/first-connection-audit.ts
  */
@@ -47,7 +54,7 @@ import { assertCatalogComplete } from "../src/tools/catalog.js";
 import { buildServerInstructions } from "../src/mcp/server.js";
 import type { Env } from "../src/index.js";
 
-const TOKEN_BUDGET = 3_250;
+const TOKEN_BUDGET = 3_900;
 
 /** Rough token estimate: chars / 4 (same heuristic used across the project docs). */
 function estimateTokens(s: string): number {

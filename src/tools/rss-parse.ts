@@ -195,12 +195,13 @@ async function fetchFeed(url: string): Promise<string> {
 
 export const rssParseTool: McpTool = {
   name: "rss_parse",
-  description: "Fetch/parse an RSS or Atom feed into JSON. Saves 90%+ tokens vs raw XML.",
+  description:
+    "Free, read-only. Fetch an RSS 2.0 or Atom feed and return JSON: feed title, link, description, lastBuildDate, itemCount, truncated, and items[] with title, link, pubDate, guid, description (HTML stripped), author, categories, enclosure. Items past maxItems are dropped and truncated=true. A URL that is not a feed returns type 'unknown' and no items. Not JSON Feed. Errors on non-2xx, 10 s timeout or private hosts.",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "Feed URL." },
-      maxItems: { type: "number", description: `Max ${MAX_ITEMS}.` },
+      url: { type: "string", description: "Feed URL, http(s). Private hosts refused." },
+      maxItems: { type: "number", description: `Default 20, max ${MAX_ITEMS}. itemCount still reports the full total.` },
     },
     required: ["url"],
   },

@@ -17,12 +17,13 @@ const HANDLED_AT_SERVER =
 
 export const useToolTool: McpTool = {
   name: "use_tool",
-  description: "Free. Run any tool not in tools/list (see tool_catalog). Same pricing as a direct call.",
+  description:
+    "Free wrapper. Runs any catalog tool missing from your tools/list exactly as a direct call: args pass through unchanged and the inner tool's price, payment, read-only profile, result and errors apply verbatim. A missing or unknown name errors pointing to tool_catalog; it cannot call itself. Get names and schemas from tool_catalog first.",
   inputSchema: {
     type: "object",
     properties: {
-      name: { type: "string", description: "Tool name (see tool_catalog)." },
-      args: { type: "object", description: "Args per that tool's inputSchema." },
+      name: { type: "string", description: "Exact tool name from tool_catalog. Not 'use_tool'." },
+      args: { type: "object", description: "Object matching that tool's inputSchema. Omit if none required." },
     },
     required: ["name"],
   },

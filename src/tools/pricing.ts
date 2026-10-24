@@ -217,7 +217,8 @@ const PRICING_DATA = {
 
 export const pricingTool: McpTool = {
   name: "pricing",
-  description: "Free. Machine-readable pricing menu: free vs paid tools, pricing, deposit/spend flow.",
+  description:
+    "Free, read-only, no network, no arguments. Returns a JSON menu: endpoint, docs; payment (x402 USDC on Base, pay-per-call vs prepaid: minimum deposit, discount, SpendAuthorization fields); tools[] with name and tier free|paid, and for paid ones price_usdc, prepaid_price_usdc, first_call_free and a value note. Flat prices are exact; fal.ai media tools show a default-args quote. Calling it charges nothing.",
   inputSchema: {
     type: "object",
     properties: {},

@@ -25,6 +25,7 @@ import {
 
 import {
   verifyPayment,
+  recordSettledNonce,
   getToolPrice,
   USDC_ADDRESS,
   USDC_EIP712_NAME,
@@ -346,6 +347,68 @@ async function runTests(): Promise<void> {
       "insufficient balance → ok: false",
       result.ok === false,
       result.ok ? "FAIL: expected rejection" : `PASS: reason=${result.reason}`
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Test 8: KV nonce read throws → verify still ok (chain is the replay guard)
+  // -------------------------------------------------------------------------
+  {
+    const payload = await buildPayload(account);
+    const brokenKv = {
+      ...makeMockKv(),
+      get: async () => { throw new Error("KV get() limit exceeded for the day."); },
+    } as unknown as KVNamespace;
+    const envBrokenKv: X402Env = { ...mockEnv, X402_NONCES: brokenKv };
+    const balanceHex = (50_000n).toString(16).padStart(64, "0");
+    mockFetchWithBalance(balanceHex);
+    let result: Awaited<ReturnType<typeof verifyPayment>> | null = null;
+    let threw = "";
+    try {
+      result = await verifyPayment(payload, config, envBrokenKv, TOOL_PRICE.payPerCallMicro);
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    restoreFetch();
+
+    assert(
+      "KV nonce read throws → ok: true (no 500)",
+      result?.ok === true,
+      threw ? `FAIL: threw ${threw}` : result?.ok ? "PASS" : `FAIL: reason=${result?.reason}`
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Test 9: recordSettledNonce never throws; reports whether KV took the write
+  // -------------------------------------------------------------------------
+  {
+    const stored = new Map<string, string>();
+    const okKv = {
+      ...makeMockKv(),
+      put: async (k: string, v: string) => { stored.set(k, v); },
+    } as unknown as KVNamespace;
+    const okResult = await recordSettledNonce({ X402_NONCES: okKv }, `0x${"AB".repeat(32)}`, "0xtx1");
+    assert(
+      "recordSettledNonce with working KV → true, lower-cased key stored",
+      okResult === true && stored.get(`0x${"ab".repeat(32)}`) === "0xtx1",
+      okResult ? `PASS: stored=${[...stored.keys()].join(",")}` : "FAIL: returned false"
+    );
+
+    const deadKv = {
+      ...makeMockKv(),
+      put: async () => { throw new Error("KV put() limit exceeded for the day."); },
+    } as unknown as KVNamespace;
+    let threw = "";
+    let deadResult: boolean | null = null;
+    try {
+      deadResult = await recordSettledNonce({ X402_NONCES: deadKv }, `0x${"cd".repeat(32)}`, "0xtx2");
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert(
+      "recordSettledNonce with KV quota exhausted → false, does not throw",
+      deadResult === false && threw === "",
+      threw ? `FAIL: threw ${threw}` : `PASS: returned ${deadResult}`
     );
   }
 

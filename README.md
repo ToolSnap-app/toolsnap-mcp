@@ -68,7 +68,7 @@ never stale.
 
 Free tools work immediately with the URL connection above. **Paid tools need an
 x402 payment client** — a wallet alone is not enough, because most MCP clients
-can't satisfy a `402 Payment Required` on their own. Use the pay-proxy below.
+can't satisfy a `402 Payment Required` on their own. Use the pay-proxy below (re-download it if your copy predates the 2026-10 spec-shaped 402, see [Payment](#payment-x402)).
 
 ### Claude Code
 
@@ -187,27 +187,34 @@ Call `tool_catalog()` for the complete, current list with schemas and prices.
 
 ## Payment (x402)
 
-When an agent calls a paid tool (e.g. `screenshot_url`) without payment, the server returns:
+When an agent calls a paid tool (e.g. `screenshot_url`) without payment, the server returns a tool result in the [x402 v2 MCP transport](https://github.com/coinbase/x402/blob/main/specs/transports-v2/mcp.md) shape: `isError: true`, the payment requirements in `structuredContent`, and the same object JSON-encoded in `content[0].text` (a second text block carries the next steps):
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "error": {
-    "code": 402,
-    "message": "Payment required",
-    "data": {
+  "result": {
+    "isError": true,
+    "structuredContent": {
       "x402Version": 2,
+      "error": "Payment required to use this tool",
+      "resource": { "url": "https://mcp.toolsnap.app/mcp#screenshot_url", "serviceName": "ToolSnap" },
       "accepts": [{
         "scheme": "exact",
         "network": "eip155:8453",
         "amount": "40000",
-        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-      }]
-    }
+        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "payTo": "0x…",
+        "maxTimeoutSeconds": 300
+      }],
+      "extensions": { "bazaar": { "info": { "input": { "type": "mcp" } } } }
+    },
+    "content": [{ "type": "text", "text": "<the same JSON>" }, { "type": "text", "text": "Payment required: …" }]
   }
 }
 ```
+
+Until 2026-10 this was a JSON-RPC error (`error.code: 402`, `error.data`). **If you downloaded `scripts/pay-proxy.mjs` before then, download it again**: older copies only recognise the old shape and will not pay on their own. (The prepaid-deposit challenge, `account_deposit`, still answers with the JSON-RPC `402` error.)
 
 An x402-enabled client reads `accepts[0]`, signs an EIP-3009 `TransferWithAuthorization`, and retries with `_meta["x402/payment"]` set. See [x402 spec](https://github.com/coinbase/x402/blob/main/specs/x402-specification-v2.md).
 

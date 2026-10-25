@@ -244,7 +244,7 @@ console.log("MCP 402: x402 MCP transport + bazaar declaration");
   assert(/wallet_setup/.test(r.result.content[1]?.text ?? ""), "content[1] carries the prose next steps");
   assert(pr.extensions.bazaar?.info?.input?.type === "mcp", "no-payment 402 has extensions.bazaar (mcp)");
   assert(pr.extensions.no_payment_method === true && pr.extensions.next_tool === "wallet_setup", "wallet_setup hints still present");
-  assert(pr.resource.url === "mcp://tool/screenshot_url" && pr.resource.serviceName === "ToolSnap", "resource keeps mcp:// url, gains service metadata");
+  assert(pr.resource.url === "https://mcp.toolsnap.app/mcp#screenshot_url" && pr.resource.serviceName === "ToolSnap", "resource url is https://<server>/mcp#<tool>, plus service metadata");
 
   const wrongTo = JSON.parse(Buffer.from(await signedPayment("0x000000000000000000000000000000000000dEaD", 40_000n), "base64").toString());
   r = await call({ "x402/payment": wrongTo });

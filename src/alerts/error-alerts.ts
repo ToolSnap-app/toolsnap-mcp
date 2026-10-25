@@ -165,6 +165,7 @@ interface BusinessSignalParams {
 const NO_BALANCE_TYPES = new Set(["prepaid_insufficient", "api_key_insufficient", "oauth_insufficient"]);
 const FIRST_PAID_TTL_SEC = 7 * 24 * HOUR_SEC;
 const NO_BALANCE_ALERT_TTL_SEC = 6 * HOUR_SEC;
+const BAZAAR_REJECT_TTL_SEC = 24 * HOUR_SEC;
 
 /**
  * Fase 24.7 — positive/actionable business signals that maybeAlertError
@@ -199,6 +200,19 @@ export function maybeAlertBusinessSignal(env: AlertEnv, ctx: ExecutionContext, p
           return;
         }
 
+        // 🟠 CDP settled the payment but its Bazaar crawler refused the listing
+        // (settler=cdp bazaar=rejected (reason)): the tool will not enter the
+        // catalog until fixed. Once per tool per day; processing/success are
+        // the normal answers and stay silent.
+        if (paymentType === "x402_paid" && /\bbazaar=rejected\b/.test(detail ?? "")) {
+          if (await shouldAlert(env.X402_NONCES, `alert:bazaarreject:${toolName}`, BAZAAR_REJECT_TTL_SEC)) {
+            await sendTelegram(
+              env,
+              [`🟠 Bazaar rechazó el listado de \`${toolName}\``, `detail: ${detail}`].join("\n")
+            );
+          }
+        }
+
         // 🟢 First paid call from this payer — the conversion the 🟡 paywall
         // alert (maybeAlertPaywallHit) is watching for. At most once/week per
         // payer so a payer's Nth call that week doesn't re-alert.
@@ -210,6 +224,7 @@ export function maybeAlertBusinessSignal(env: AlertEnv, ctx: ExecutionContext, p
               `🟢 primera llamada pagada de este agente`,
               `tool: \`${toolName}\` · rail: ${paymentType}`,
               `payer: ${truncatePayer(payer)}${client ? ` · client: ${client}` : ""}`,
+              ...(detail ? [`detail: ${detail}`] : []),
             ].join("\n")
           );
           return;

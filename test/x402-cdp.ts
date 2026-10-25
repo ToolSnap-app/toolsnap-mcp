@@ -205,6 +205,15 @@ console.log("buildCdpRequest");
   assert(r.paymentRequirements.payTo === PAY_TO && r.paymentRequirements.amount === PRICE.toString(), "a mismatched `accepted` echo is replaced by our requirements");
   assert((r.paymentPayload.accepted as any).payTo === PAY_TO, "payload.accepted aligned with the requirements sent");
 
+  // A matching echo with a different `extra` / maxTimeoutSeconds must not change what CDP gets.
+  const sneaky = await signedPayload(PRICE, { scheme: "exact", network: "eip155:8453", amount: PRICE.toString(), asset: USDC_ADDRESS, payTo: PAY_TO, maxTimeoutSeconds: 99999, extra: { name: "Other", version: "9", assetTransferMethod: "permit2" } });
+  r = buildCdpRequest(sneaky, PAY_TO, PRICE, disc);
+  assert(
+    r.paymentRequirements.maxTimeoutSeconds === 300 && (r.paymentRequirements.extra as any).name === USDC_EIP712_NAME && (r.paymentRequirements.extra as any).assetTransferMethod === "eip3009",
+    "a matching echo with a different extra/maxTimeoutSeconds does not change the requirements sent to CDP"
+  );
+  assert(JSON.stringify(r.paymentPayload.accepted) === JSON.stringify(r.paymentRequirements), "payload.accepted equals our requirements");
+
   const echoed = { ...p, resource: { url: "https://mcp.toolsnap.app/x402/tools/x" }, extensions: { bazaar: { mine: true } } };
   r = buildCdpRequest(echoed, PAY_TO, PRICE, disc);
   assert((r.paymentPayload.extensions as any).bazaar.mine === true && (r.paymentPayload.resource as any).url.startsWith("https://"), "keeps the buyer's echoed resource + bazaar");
@@ -229,7 +238,7 @@ console.log("Settle via CDP");
   assert(claims.uris[0] === "POST api.cdp.coinbase.com/platform/v2/x402/settle", "settle JWT bound to the settle path");
   assert(s.body.x402Version === 2 && s.body.paymentRequirements.amount === PRICE.toString() && s.body.paymentRequirements.payTo === PAY_TO, "settle body: v2 + our requirements");
   assert(s.body.paymentPayload.extensions?.bazaar?.info?.input?.toolName === TOOL, "settle payload carries extensions.bazaar (what CDP catalogs)");
-  assert(s.body.paymentPayload.resource?.url === `mcp://tool/${TOOL}` && s.body.paymentPayload.resource?.serviceName === "ToolSnap", "settle payload carries the resource + service metadata");
+  assert(s.body.paymentPayload.resource?.url === `https://mcp.toolsnap.app/mcp#${TOOL}` && s.body.paymentPayload.resource?.serviceName === "ToolSnap", "settle payload carries the resource (https://<server>/mcp#<tool>) + service metadata");
   assert(JSON.stringify(v.body) === JSON.stringify(s.body), "verify and settle send the same body");
   assert(kv.get(p.payload.authorization.nonce.toLowerCase()) === TX, "nonce recorded in KV (anti-replay)");
   assert(rawTxSent === 0, "relayer not used");

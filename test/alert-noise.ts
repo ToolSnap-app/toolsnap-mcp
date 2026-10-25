@@ -23,7 +23,7 @@
  */
 import { isProbeClient } from "../src/analytics/surface.js";
 import { isUpstreamError, classifyToolError } from "../src/alerts/error-classification.js";
-import { maybeAlertError } from "../src/alerts/error-alerts.js";
+import { maybeAlertError, maybeAlertBusinessSignal } from "../src/alerts/error-alerts.js";
 import { findBrokenTools, canaryDecides, runFetchCanary, type WindowRow } from "../src/alerts/health.js";
 import { httpStatusError } from "../src/tools/safe-fetch.js";
 import { redactDetail } from "../src/analytics/redact.js";
@@ -379,6 +379,76 @@ async function sentMessages(
     "a money failure pages even from a probe client name",
     sent.length === 1 && sent[0].startsWith("🔴"),
     `sent ${sent.length}: ${sent[0] ?? "(none)"}`
+  );
+}
+
+
+async function businessMessages(
+  events: Array<Parameters<typeof maybeAlertBusinessSignal>[2]>,
+  kv = makeKv()
+): Promise<string[]> {
+  const sent: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    sent.push(String(JSON.parse(String(init?.body ?? "{}")).text ?? ""));
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  try {
+    const env = {
+      TELEGRAM_BOT_TOKEN: "test-token",
+      TELEGRAM_CHAT_ID: "test-chat",
+      X402_NONCES: kv as unknown as KVNamespace,
+    };
+    for (const event of events) {
+      const { ctx, settled } = makeCtx();
+      maybeAlertBusinessSignal(env, ctx, event);
+      await settled();
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  return sent;
+}
+
+{
+  console.log("\nFase 37.0 — alertas del liquidador CDP / Bazaar");
+  const PAYER = "0xabcabcabcabcabcabcabcabcabcabcabcabcabca";
+  const paid = (toolName: string, detail: string, payer = PAYER) => ({
+    toolName,
+    paymentType: "x402_paid",
+    payer,
+    revenueUsdc: 0.04,
+    detail,
+  });
+
+  const first = await businessMessages([paid("screenshot_url", "settler=cdp bazaar=processing")]);
+  assert(
+    "el 🟢 de primera llamada pagada incluye el detail del evento",
+    first.length === 1 && first[0].startsWith("🟢") && first[0].includes("settler=cdp bazaar=processing"),
+    JSON.stringify(first)
+  );
+
+  const rejected = await businessMessages([
+    paid("screenshot_url", "settler=cdp bazaar=rejected (invalid_schema)", "0x1111111111111111111111111111111111111111"),
+    paid("screenshot_url", "settler=cdp bazaar=rejected (invalid_schema)", "0x2222222222222222222222222222222222222222"),
+    paid("keyword_research", "settler=cdp bazaar=rejected (invalid_schema)", "0x3333333333333333333333333333333333333333"),
+  ]);
+  const orange = rejected.filter((m) => m.startsWith("🟠"));
+  assert(
+    "bazaar=rejected pagina 🟠 una vez por tool (2 tools → 2 avisos, aunque haya 3 pagos)",
+    orange.length === 2 && orange[0].includes("screenshot_url") && orange[1].includes("keyword_research") && orange[0].includes("invalid_schema"),
+    JSON.stringify(rejected)
+  );
+
+  const quiet = await businessMessages([
+    paid("screenshot_url", "settler=cdp bazaar=processing", "0x4444444444444444444444444444444444444444"),
+    paid("keyword_research", "settler=cdp bazaar=success", "0x5555555555555555555555555555555555555555"),
+    paid("image_generate", "settler=relayer", "0x6666666666666666666666666666666666666666"),
+  ]);
+  assert(
+    "processing / success / relayer no suenan en 🟠",
+    quiet.every((m) => m.startsWith("🟢")) && quiet.length === 3,
+    JSON.stringify(quiet)
   );
 }
 

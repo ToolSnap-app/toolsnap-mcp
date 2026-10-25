@@ -21,6 +21,8 @@
  *    once (CDP then checks the transaction it already broadcast) and a still
  *    pending answer is reported as submitted, never retried with new data.
  *
+ * Decision record: ADR-004 (vault, mcp.toolsnap.app/12 — Especificaciones y decisiones técnicas).
+ *
  * API: https://docs.cdp.coinbase.com/x402/core-concepts/facilitator
  * Auth (JWT): https://docs.cdp.coinbase.com/api-reference/v2/authentication
  * Pending: https://docs.cdp.coinbase.com/x402/seller/settlement-pending
@@ -113,8 +115,8 @@ export interface CdpRequest {
 
 /**
  * Build the verify/settle body. Requirements are the ones we advertised for
- * this call (the gate's price); the buyer's `accepted` echo is used only when
- * it agrees with them on every field the facilitator compares. Our resource
+ * this call (the gate's price) and are always ours: the buyer's `accepted` echo
+ * never steers what CDP settles against, even when it agrees. Our resource
  * and bazaar declaration are added to the payload when the buyer didn't echo
  * them: they are the resource server's own declarations, outside the signed
  * authorization, and CDP only catalogs a settlement that carries them.
@@ -134,15 +136,9 @@ export function buildCdpRequest(
     maxTimeoutSeconds: 300,
     extra: { name: USDC_EIP712_NAME, version: USDC_EIP712_VERSION, assetTransferMethod: "eip3009" },
   };
-  const echo = paymentPayload.accepted as Record<string, unknown> | undefined;
-  const echoMatches =
-    !!echo &&
-    echo.scheme === ours.scheme &&
-    echo.network === ours.network &&
-    echo.amount === ours.amount &&
-    String(echo.asset).toLowerCase() === USDC_ADDRESS.toLowerCase() &&
-    String(echo.payTo).toLowerCase() === payTo.toLowerCase();
-  const requirements = echoMatches ? { ...ours, ...echo } : ours;
+  // Always our own requirements, never the buyer's echo: a matching echo may
+  // still differ in `extra` or `maxTimeoutSeconds`, which must not reach CDP.
+  const requirements = ours;
 
   const extensions = { ...((paymentPayload.extensions as Record<string, unknown> | undefined) ?? {}) };
   if (!extensions.bazaar && discovery.bazaar) extensions.bazaar = discovery.bazaar;

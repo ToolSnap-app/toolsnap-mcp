@@ -77,12 +77,13 @@ const toc = [
   </DocSection>
 
   <DocSection num="05" title="Paying with x402 (crypto rail)" id="x402">
-    <p>Paid tools respond with HTTP 402 + payment requirements. A capable client signs an EIP-3009 USDC authorization (Base mainnet) and retries; we verify and settle on-chain. No account, no key — the wallet is the identity.</p>
+    <p>Paid tools answer an unpaid call with the x402 v2 payment requirements, in the shape of the spec's MCP transport: a tool result with <code class="inline">isError: true</code>, the requirements in <code class="inline">structuredContent</code> and the same JSON in the first text block. A capable client signs an EIP-3009 USDC authorization (Base mainnet) and retries; we verify and settle on-chain. No account, no key — the wallet is the identity.</p>
     <p>Most MCP clients can't sign x402 out of the box. That's what the pay-proxy is for:</p>
   </DocSection>
 
   <DocSection num="06" title="The pay-proxy" id="pay-proxy">
     <p>A tiny local stdio MCP server that wraps the remote endpoint. On a 402 it signs with your agent's wallet and retries automatically. The key never leaves your machine; only signatures travel.</p>
+    <p>The 402 now follows the spec (<code class="inline">isError</code> + <code class="inline">structuredContent</code>, no longer a JSON-RPC error). Download <code class="inline">pay-proxy</code> again if your copy is older: it still reads both shapes, but copies from before 2026-10 only know the old one.</p>
     <CodeBlock lang="json" code={`{ "mcpServers": { "toolsnap": { "command": "node", "args": ["/ABS/PATH/toolsnap-mcp/scripts/pay-proxy.mjs"] } } }`} />
     <p>Key resolution order: <code class="inline">TOOLSNAP_WALLET_KEY</code> env &rarr; <code class="inline">~/.toolsnap/wallet.key</code> &rarr; OS keychain (<code class="inline">toolsnap-agent-wallet</code>). Useful env: <code class="inline">TOOLSNAP_MAX_PRICE_USDC</code> (per-call cap, default 0.10), <code class="inline">TOOLSNAP_PREPAID=1</code>, <code class="inline">TOOLSNAP_AUTO_DEPOSIT_USDC</code>.</p>
     <p>No wallet yet? &rarr; <a href="/wallet-guide">Wallet guide</a>.</p>

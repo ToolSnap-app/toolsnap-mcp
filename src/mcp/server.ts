@@ -33,7 +33,7 @@ import {
   getBalanceMicro,
   creditDeposit,
 } from "../x402/prepaid.js";
-import { mcpDiscoveryFields } from "../x402/discovery.js";
+import { mcpDiscoveryFields, PUBLIC_ORIGIN } from "../x402/discovery.js";
 import { cdpEnabled, buildCdpRequest, cdpVerify, cdpSettle, type CdpRequest } from "../x402/cdp.js";
 import { writeEvent, type AnalyticsEvent } from "../analytics/logger.js";
 import { classifySurface, persistSessionClient, readSessionClient, anonPayerId } from "../analytics/surface.js";
@@ -1203,10 +1203,10 @@ export async function dispatch(
             price.payPerCallMicro,
             {
               resource: {
-                url: `mcp://tool/${toolName}`,
                 description: discovery.description,
                 mimeType: "application/json",
                 ...discovery.resource,
+                url: `${PUBLIC_ORIGIN}/mcp#${toolName}`,
               },
               bazaar: (discovery.extensions as { bazaar?: Record<string, unknown> }).bazaar ?? null,
             }

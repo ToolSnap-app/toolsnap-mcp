@@ -232,12 +232,23 @@ export function resourceMetadata(toolName: string): Record<string, unknown> {
   return { ...SERVICE_METADATA, ...(tags.length ? { tags } : {}) };
 }
 
+/**
+ * Catalog identifier of an MCP tool: `https://<server>/mcp#<tool>`, the shape of
+ * every MCP entry in the live Bazaar. Unlike `mcp://tool/<tool>` it tells the
+ * buyer which server to connect to.
+ */
+export function mcpResourceUrl(toolName: string): string {
+  return `${PUBLIC_ORIGIN}/mcp#${toolName}`;
+}
+
 /** Discovery fields folded into the MCP 402 (buildPaymentRequiredResponse). */
 export function mcpDiscoveryFields(toolName: string, priceUSDC: string) {
   const bazaar = bazaarMcpExtension(toolName);
   return {
     description: resourceDescription(toolName, priceUSDC),
-    resource: resourceMetadata(toolName),
+    // `url` rides in the metadata so the 402 advertises it: spec clients echo
+    // the 402's resource in their payload, and that echo is what CDP catalogs.
+    resource: { ...resourceMetadata(toolName), url: mcpResourceUrl(toolName) },
     extensions: bazaar ? { bazaar } : {},
   };
 }

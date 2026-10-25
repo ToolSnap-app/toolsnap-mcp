@@ -46,6 +46,17 @@
  *    per-tool notes asked for the output shape, truncation semantics,
  *    sitemap-index handling, what a family is and how use_tool forwards
  *    args and errors; each description now says so. Other 11 untouched.
+ *  - 2026-10-25: 4,450 — third round (+525 measured) for Glama's TDQS of
+ *    v0.1.5 (4.4/5; the six round-2 tools went to 4.1-4.7). use_tool had
+ *    Behavior 1/5 because its static hints (not read-only, not destructive)
+ *    read as contradicting "the inner tool's profile applies": the
+ *    description now says the hints are the worst case over the catalog and
+ *    tool_catalog detail entries carry each tool's own annotations. pricing
+ *    says when to call it and how it differs from tool_catalog. fetch_extract
+ *    and fetch_metadata (3.8 since June) say output shape, limits (redirects,
+ *    timeout, 512 KB head read), truncation marker, SPA/bot-wall behaviour
+ *    and which sibling to use instead; their url/headers parameters say the
+ *    allowlist and the host-change drop. Other 13 untouched.
  *
  * Run:  npx tsx scripts/first-connection-audit.ts
  */
@@ -54,7 +65,7 @@ import { assertCatalogComplete } from "../src/tools/catalog.js";
 import { buildServerInstructions } from "../src/mcp/server.js";
 import type { Env } from "../src/index.js";
 
-const TOKEN_BUDGET = 3_900;
+const TOKEN_BUDGET = 4_450;
 
 /** Rough token estimate: chars / 4 (same heuristic used across the project docs). */
 function estimateTokens(s: string): number {

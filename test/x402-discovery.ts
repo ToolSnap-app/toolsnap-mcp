@@ -263,6 +263,7 @@ console.log("Fan-out documents");
 
   const oa = buildOpenApi(env) as Record<string, any>;
   assert(typeof oa.openapi === "string" && oa.info?.title && oa.info?.version, "OpenAPI top-level fields");
+  assert(oa.info?.contact?.email === "support@toolsnap.app", "info.contact.email set (x402scan ownership check)");
   const paths = Object.keys(oa.paths);
   assert(paths.length === KNOWN_PAID.length, "OpenAPI has one path per paid tool");
   for (const p of paths) {

@@ -112,12 +112,16 @@ function extractMeta(html: string, resolvedUrl: string): MetaResult {
 
 export const webpageMetadataTool: McpTool = {
   name: "fetch_metadata",
-  description: "Fetch a URL, extract title/description/OG/Twitter/canonical/JSON-LD. Not for body text.",
+  description:
+    "Free, read-only. Fetch a public http(s) URL and return its <head> metadata as JSON: url (after redirects), title, description, canonical, robots, author, keywords, lang, charset, og{} and twitter{} (prefix stripped), httpEquiv{}, jsonLd[] (parsed blocks, malformed ones skipped). Absent fields are null or {}. Reads only the first 512 KB, follows up to 5 redirects, 10 s timeout; private and local hosts are rejected and non-2xx responses error with the HTTP status. Runs no JavaScript, so tags injected client-side are not seen. Not for body text: use fetch_extract (plain text) or fetch_html (raw HTML).",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "Page URL." },
-      headers: HEADERS_SCHEMA_PROPERTY,
+      url: { type: "string", description: "Public http:// or https:// URL. Local and private hosts are rejected." },
+      headers: {
+        ...HEADERS_SCHEMA_PROPERTY,
+        description: "Headers to forward for pages behind login: Authorization, Cookie, X-API-Key only. Dropped if a redirect leaves the original host.",
+      },
     },
     required: ["url"],
   },

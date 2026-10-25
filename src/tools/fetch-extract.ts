@@ -91,13 +91,20 @@ function detectUnusable(html: string, text: string): string | null {
 
 export const fetchExtractTool: McpTool = {
   name: "fetch_extract",
-  description: "Fetch a URL, return clean text. Free. Median 98% fewer tokens than raw HTML. Not for JS SPAs.",
+  description:
+    "Free, read-only. Fetch a public http(s) URL and return its body as plain text: script, style, nav, header, footer and aside removed, tags stripped, entities decoded, whitespace collapsed. Median 98% fewer tokens than raw HTML. Follows up to 5 redirects, 10 s timeout; private and local hosts are rejected and non-2xx responses error with the HTTP status. Text past maxChars is cut and ends with '[Truncated at N chars]': raise maxChars (max 32000) or use fetch_html for everything. Runs no JavaScript: a client-side-rendered SPA or a bot/login wall yields almost no text, so the call errors instead of returning an empty shell and names the fix (fetch_rendered, paid, runs a browser; screenshot_url; or headers for auth). For title/OG/JSON-LD only use fetch_metadata; for Markdown with links use html_to_markdown.",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "Page URL." },
-      maxChars: { type: "number", description: `Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
-      headers: HEADERS_SCHEMA_PROPERTY,
+      url: { type: "string", description: "Public http:// or https:// URL. Local and private hosts are rejected." },
+      maxChars: {
+        type: "number",
+        description: `Characters of text to return. Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS} (higher values are clamped). Truncated output ends with a '[Truncated at N chars]' marker.`,
+      },
+      headers: {
+        ...HEADERS_SCHEMA_PROPERTY,
+        description: "Headers to forward for pages behind login: Authorization, Cookie, X-API-Key only. Dropped if a redirect leaves the original host.",
+      },
     },
     required: ["url"],
   },

@@ -46,7 +46,9 @@ export const TOOL_SPECS: Record<string, Spec> = {
   account_deposit: create("Deposit USDC prepaid balance"),
   wallet_setup: local("Agent wallet setup guide"),
   tool_catalog: local("Browse tool catalog"),
-  // Dispatcher: runs any other catalog tool, none of which is destructive.
+  // Dispatcher: worst case over the catalog. Some inner tools create (render,
+  // stored file, ledger entry) so it is not read-only; none deletes or
+  // overwrites, so never destructive. The description says exactly this.
   use_tool: create("Run any catalog tool"),
   memory_snippet: local("Memory snippet for agents"),
   task_recipes: local("Task recipes"),

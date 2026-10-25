@@ -1,6 +1,7 @@
 import type { McpTool } from "../mcp/types.js";
 import type { Env } from "../index.js";
 import { FAMILIES, NOTES } from "./catalog.js";
+import { annotationsFor } from "./annotations.js";
 import { requiresPayment, getToolPrice } from "../x402/middleware.js";
 
 const HANDLED_AT_SERVER =
@@ -38,10 +39,14 @@ function buildFamiliesLayer(env: Env, allTools: McpTool[]): string {
 
 /** Shape of a single tool's detail entry (layer 2). */
 function toolDetail(tool: McpTool, env: Env) {
+  const annotations = annotationsFor(tool.name);
   return {
     name: tool.name,
     price: priceFor(tool.name, env),
     description: tool.description,
+    // Hints of the tool itself (readOnlyHint etc.), so a caller going through
+    // use_tool can judge the inner tool rather than the dispatcher's worst case.
+    ...(annotations ? { annotations } : {}),
     ...(NOTES[tool.name] ? { notes: NOTES[tool.name] } : {}),
     inputSchema: tool.inputSchema,
   };

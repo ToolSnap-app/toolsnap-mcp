@@ -18,7 +18,7 @@ const HANDLED_AT_SERVER =
 export const useToolTool: McpTool = {
   name: "use_tool",
   description:
-    "Free wrapper. Runs any catalog tool missing from your tools/list exactly as a direct call: args pass through unchanged and the inner tool's price, payment, read-only profile, result and errors apply verbatim. A missing or unknown name errors pointing to tool_catalog; it cannot call itself. Get names and schemas from tool_catalog first.",
+    "Free wrapper. Runs any catalog tool missing from your tools/list exactly as a direct call: args pass through unchanged and the inner tool's price, payment, result and errors apply verbatim. Its hints are the worst case over the whole catalog: not read-only because some inner tools create a render, a stored file or a ledger entry; never destructive because no catalog tool deletes or overwrites anything. Get the inner tool's name, schema and its own annotations from tool_catalog(tool='<name>') first. A missing or unknown name errors pointing to tool_catalog; it cannot call itself.",
   inputSchema: {
     type: "object",
     properties: {
@@ -27,8 +27,10 @@ export const useToolTool: McpTool = {
     },
     required: ["name"],
   },
-  // Annotations live in src/tools/annotations.ts. use_tool only dispatches to
-  // other catalog tools, none of which delete or overwrite anything.
+  // Annotations live in src/tools/annotations.ts: the worst case over the
+  // catalog (not read-only, never destructive), spelled out in the description
+  // so directories do not read the static hints as contradicting the
+  // pass-through semantics (Glama TDQS v0.1.5 scored Behavior 1/5 on that).
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

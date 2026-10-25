@@ -407,7 +407,8 @@ function splitSignature(sig: string): { v: number; r: Hex; s: Hex } {
 export function buildPaymentRequiredResponse(
   config: PaymentConfig,
   requestId: string | number | null,
-  reason?: string
+  reason?: string,
+  discovery?: { description: string; resource: Record<string, unknown>; extensions: Record<string, unknown> }
 ): object {
   // Amount comes from the per-tool price carried in config.priceUSDC (set by the
   // dispatcher via getToolPrice), not a hardcoded flat rate.
@@ -417,8 +418,11 @@ export function buildPaymentRequiredResponse(
     error: reason ?? "Payment required to use this tool",
     resource: {
       url: `mcp://tool/${config.resource}`,
-      description: `Pay $${config.priceUSDC} USDC on Base to call the ${config.resource} tool`,
+      description:
+        discovery?.description ?? `Pay $${config.priceUSDC} USDC on Base to call the ${config.resource} tool`,
       mimeType: "application/json",
+      // x402 Bazaar service metadata (serviceName/tags/iconUrl), see discovery.ts.
+      ...(discovery?.resource ?? {}),
     },
     accepts: [
       {
@@ -443,7 +447,7 @@ export function buildPaymentRequiredResponse(
       connect_url: "https://mcp.toolsnap.app/mcp/oauth",
       hint: "Prefer signing in over copying a key? Reconnect using this URL as your MCP server — your client will walk you through sign-in, no key to copy. Your credits balance is shared across OAuth and API-key connections, so switching doesn't lose anything.",
     },
-    extensions: {},
+    extensions: { ...(discovery?.extensions ?? {}) },
   };
 
   // Most MCP clients only surface error.message to the calling agent/LLM —

@@ -31,6 +31,7 @@ import {
   getBalanceMicro,
   creditDeposit,
 } from "../x402/prepaid.js";
+import { mcpDiscoveryFields } from "../x402/discovery.js";
 import { writeEvent, type AnalyticsEvent } from "../analytics/logger.js";
 import { classifySurface, persistSessionClient, readSessionClient, anonPayerId } from "../analytics/surface.js";
 import { isD1Unavailable, d1UnavailableRpc } from "../d1-errors.js";
@@ -1116,10 +1117,17 @@ export async function dispatch(
           // No payment payload at all → agent likely has no wallet yet.
           // Inject a wallet_setup hint into the standard x402 response so the
           // agent knows the exact next step without reading docs.
-          const base402 = buildPaymentRequiredResponse(config, id) as {
+          const base402 = buildPaymentRequiredResponse(
+            config,
+            id,
+            undefined,
+            mcpDiscoveryFields(toolName, price.payPerCallStr)
+          ) as {
             error: { data: { extensions: Record<string, unknown> } };
           } & JsonRpcResponse;
           base402.error.data.extensions = {
+            // Keep the bazaar discovery declaration alongside the hints.
+            ...base402.error.data.extensions,
             no_payment_method: true,
             next_tool: "wallet_setup",
             hint: "No payment payload detected. Three ways forward: (1) call wallet_setup to create a wallet your agent controls (ToolSnap never sees the key), then fund it with USDC on Base; (2) if your human prefers a card, they can buy credits and either sign in via /mcp/oauth or paste an API key — see error.data.oauth/fiat below; (3) the free tools (most of the catalog) still work with no payment at all.",
@@ -1143,7 +1151,8 @@ export async function dispatch(
           return buildPaymentRequiredResponse(
             config,
             id,
-            verifyResult.reason
+            verifyResult.reason,
+            mcpDiscoveryFields(toolName, price.payPerCallStr)
           ) as JsonRpcResponse;
         }
 

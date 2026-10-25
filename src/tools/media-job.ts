@@ -238,7 +238,6 @@ export const mediaJobTool: McpTool = {
     },
     required: ["job_id"],
   },
-  annotations: { readOnlyHint: false, destructiveHint: false },
   run() {
     throw new Error("media_job is env-aware and handled by the server dispatcher (runWithEnv); it must not be run directly.");
   },

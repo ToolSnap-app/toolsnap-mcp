@@ -27,6 +27,36 @@
  *    raise: spend tokens where they prevent bad calls or build trust, never
  *    on prose for directory scores. Script now runs in CI so the next
  *    overshoot fails a PR instead of drifting silently.
+ *  - 2026-10-22: 2,900 — deliberate raise (+~260 measured) for the `title` of
+ *    every core tool, advertised both top-level (MCP 2025-06-18) and as
+ *    annotations.title (older clients, Glama TDQS, Anthropic Software
+ *    Directory Policy 5E). Required for directory listing, not prose; the
+ *    hint keys that equal the spec defaults stay omitted to keep this small.
+ *  - 2026-10-24: 3,250 — deliberate raise (+~332 measured) for the five
+ *    lowest-scoring core tools in Glama's TDQS of v0.1.2 (B, 3.6/5; the June
+ *    A, 4.6, had longer descriptions): memory_snippet, json_query, fetch_html,
+ *    html_to_markdown, pdf_text_extract. Each now states what it returns, its
+ *    limits and what it does not do, and its parameters say format/limits.
+ *    Spend is on accuracy (Anthropic Directory Policy §2: precise, no pushing
+ *    to other tools), not marketing; the other 12 tools are untouched.
+ *  - 2026-10-25: 3,900 — second round (+647 measured) for Glama's TDQS of
+ *    v0.1.4 (4.1/5: the five rewritten tools went to 4.3-4.9, the untouched
+ *    ones kept 3.5-3.8). Same recipe on the six lowest: rss_parse,
+ *    sitemap_parse, csv_query, tool_catalog, use_tool, pricing. Glama's
+ *    per-tool notes asked for the output shape, truncation semantics,
+ *    sitemap-index handling, what a family is and how use_tool forwards
+ *    args and errors; each description now says so. Other 11 untouched.
+ *  - 2026-10-25: 4,450 — third round (+525 measured) for Glama's TDQS of
+ *    v0.1.5 (4.4/5; the six round-2 tools went to 4.1-4.7). use_tool had
+ *    Behavior 1/5 because its static hints (not read-only, not destructive)
+ *    read as contradicting "the inner tool's profile applies": the
+ *    description now says the hints are the worst case over the catalog and
+ *    tool_catalog detail entries carry each tool's own annotations. pricing
+ *    says when to call it and how it differs from tool_catalog. fetch_extract
+ *    and fetch_metadata (3.8 since June) say output shape, limits (redirects,
+ *    timeout, 512 KB head read), truncation marker, SPA/bot-wall behaviour
+ *    and which sibling to use instead; their url/headers parameters say the
+ *    allowlist and the host-change drop. Other 13 untouched.
  *
  * Run:  npx tsx scripts/first-connection-audit.ts
  */
@@ -35,7 +65,7 @@ import { assertCatalogComplete } from "../src/tools/catalog.js";
 import { buildServerInstructions } from "../src/mcp/server.js";
 import type { Env } from "../src/index.js";
 
-const TOKEN_BUDGET = 2_650;
+const TOKEN_BUDGET = 4_450;
 
 /** Rough token estimate: chars / 4 (same heuristic used across the project docs). */
 function estimateTokens(s: string): number {

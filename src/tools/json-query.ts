@@ -491,19 +491,19 @@ async function runJsonQuery(args: Record<string, unknown>, opts: JsonQueryEngine
 
 export const jsonQueryTool: McpTool = {
   name: "json_query",
-  description: "Query JSON with JSONPath-lite ($.a[*].b, ..key). One of url or json.",
+  description:
+    "Free, read-only. JSONPath-lite query on JSON from a URL or an inline string (one of the two). Returns matches as JSON: one match bare, several as an array. Supports $, .key, ['key'], [0], [-1], [*], ..key and [?(@.k op v)]; no slices or jq. Errors on invalid JSON or over 5 MB (json_query_xl: paid, 25 MB).",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "JSON URL (alt. to json)." },
-      json: { type: "string", description: "Raw JSON (alt. to url)." },
-      query: { type: "string", description: "e.g. '$.users[*].name'." },
-      limit: { type: "number", description: "Max results." },
+      url: { type: "string", description: "JSON URL, max 5 MB. Not with json." },
+      json: { type: "string", description: "Inline JSON text. Not with url." },
+      query: { type: "string", description: "Starts with $: '$.users[*].name', '$..price', '$.items[?(@.price<10)].id'. Filter ops: = != > >= < <= =~. '$' = whole document." },
+      limit: { type: "number", description: "Default 100, max 1000. Above it: {results,total,returned}." },
       headers: HEADERS_SCHEMA_PROPERTY,
     },
     required: ["query"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("json_query is env-aware and must be called via runWithEnv");
   },
@@ -537,7 +537,6 @@ export const jsonQueryXlTool: McpTool = {
     },
     required: ["url", "query"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("json_query_xl is env-aware and must be called via runWithEnv");
   },

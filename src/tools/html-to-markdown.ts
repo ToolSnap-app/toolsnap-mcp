@@ -190,17 +190,17 @@ async function fetchHtml(
 
 export const htmlToMarkdownTool: McpTool = {
   name: "html_to_markdown",
-  description: "Convert a URL or raw HTML to Markdown. One of url or html. Not for JS SPAs.",
+  description:
+    "Free, read-only. Convert a fetched URL or an HTML string you pass (one of the two) to Markdown: headings, links, lists, emphasis, code, quotes. Drops nav, header, footer, aside, script and style. Returns text, cut at maxChars with a marker. Runs no JavaScript: SPAs return an empty shell. Tables become plain text.",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "Page URL (alt. to html)." },
-      html: { type: "string", description: "Raw HTML (alt. to url)." },
-      maxChars: { type: "number", description: `Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
+      url: { type: "string", description: "Page URL to fetch. Not with html." },
+      html: { type: "string", description: "HTML text to convert. Not with url." },
+      maxChars: { type: "number", description: `Output cap, chars. Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
       headers: HEADERS_SCHEMA_PROPERTY,
     },
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("html_to_markdown is env-aware and must be called via runWithEnv");
   },

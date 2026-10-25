@@ -4,13 +4,19 @@
 import {
   PAGE_SIZES, fmt, fmtUsd, fmtPct, fmtMs, esc, timeLabel, truncatePayer, tfLabel, winKey, winLabel,
   seriesForTimeframe, smitheryDelta, niceMax, formatXLabel, formatFullDate, paginate, paywallRate,
-  groupSurface, cogsSummary, funnelRows, healthSummary, retentionParts, sanitizeState,
+  groupSurface, cogsSummary, partialLabel, funnelRows, healthSummary, retentionParts, sanitizeState, classifyDataResponse,
 } from './panel-lib.js';
 
 // ---------------------------------------------------------------------------
 // Estado
 // ---------------------------------------------------------------------------
 const LS_KEY = 'ts_panel';
+// Fase 25.20 — marca de una recarga pedida por el boton refresh con la sesion
+// de Access caducada: al volver, la primera carga salta la cache del servidor.
+const RELOAD_FRESH_KEY = 'ts_panel_reload_fresh';
+// true mientras esta carga venga de esa recarga: si Access sigue sin sesion, no
+// se recarga otra vez (evita un bucle si el login de Access no se completa).
+let reloadedForSession = false;
 const DEFAULTS = {
   days: 30,
   view: 'line',
@@ -58,6 +64,23 @@ function setPanel(name, html, state = 'ready') {
 function setEmpty(name, text) { setPanel(name, '<p class="state">' + esc(text) + '</p>', 'empty'); }
 function setError(name, message) {
   setPanel(name, '<p class="state state-error"><span class="mark danger"></span><span>' + esc(message) + '</span></p>', 'error');
+}
+/** Aviso de arriba del panel. `signIn` anade el boton que vuelve a entrar por Access. */
+function showNotice(level, text, signIn) {
+  const notice = $('#notice');
+  notice.innerHTML = '<span class="mark ' + (level === 'info' ? 'muted' : 'danger') + '"></span><span>' + esc(text) + '</span>'
+    + (signIn ? '<button type="button" class="btn" data-signin="1">sign in again</button>' : '');
+  notice.hidden = false;
+}
+/** Sin datos previos: cada tarjeta dice que no tiene datos; el detalle va en el aviso de arriba. */
+function markNotLoaded() {
+  $$('[data-panel]').forEach((p) => setError(p.dataset.panel, 'not loaded'));
+  $$('[data-kpi]').forEach((k) => { k.dataset.state = 'error'; $('.num', k).textContent = '–'; });
+}
+/** Recarga la pagina: la navegacion pasa por el login de Access y vuelve aqui. */
+function signInAgain(fresh) {
+  if (fresh) { try { sessionStorage.setItem(RELOAD_FRESH_KEY, '1'); } catch (e) { /* private mode */ } }
+  location.reload();
 }
 /** Anchos de barras desde data-w: el markup no lleva estilos inline, los aplica el DOM. */
 function applyWidths(root) {
@@ -127,6 +150,10 @@ function timeChart(series, opts) {
   const W = Math.max(260, opts.width || 560), H = 210, ML = 48, MR = 14, MT = 14, MB = 26;
   const plotW = W - ML - MR, plotH = H - MT - MB;
   const n = series.length;
+  // Fase 25.21: el ultimo punto puede ser el dia UTC en curso (parcial). El "ultimo valor"
+  // anotado es el del ultimo punto completo; el parcial se dibuja aparte, a su derecha.
+  const hasPartial = !!series[n - 1].partial;
+  const lastIdx = hasPartial ? n - 2 : n - 1;
   const maxVal = Math.max(...series.map((s) => s.value));
   const top = niceMax(maxVal);
   const xAt = (i) => (n === 1 ? ML + plotW / 2 : ML + (i / (n - 1)) * plotW);
@@ -162,21 +189,30 @@ function timeChart(series, opts) {
       const x = xAt(i) - bw / 2, rr = Math.min(4, bw / 2, h);
       // esquinas redondeadas solo arriba (extremo del dato); base recta
       const d = 'M' + r2(x) + ' ' + r2(MT + plotH) + 'V' + r2(y + rr) + 'Q' + r2(x) + ' ' + r2(y) + ' ' + r2(x + rr) + ' ' + r2(y) + 'H' + r2(x + bw - rr) + 'Q' + r2(x + bw) + ' ' + r2(y) + ' ' + r2(x + bw) + ' ' + r2(y + rr) + 'V' + r2(MT + plotH) + 'Z';
-      return '<path class="bar-mark ' + slot + '" data-i="' + i + '" d="' + d + '"/>';
+      return '<path class="bar-mark ' + slot + (s.partial ? ' partial' : '') + '" data-i="' + i + '" d="' + d + '"/>';
     }).join('');
   } else {
-    const pts = series.map((s, i) => r2(xAt(i)) + ',' + r2(yAt(s.value))).join(' ');
-    const area = r2(xAt(0)) + ',' + (MT + plotH) + ' ' + pts + ' ' + r2(xAt(n - 1)) + ',' + (MT + plotH);
-    const lastX = r2(xAt(n - 1)), lastY = r2(yAt(series[n - 1].value));
-    viz = '<polygon class="area ' + slot + '" points="' + area + '"/>'
-      + '<polyline class="line ' + slot + '" points="' + pts + '"/>'
-      + '<circle class="end-dot ' + slot + '" cx="' + lastX + '" cy="' + lastY + '" r="4"/>'
-      + '<text class="end-label" x="' + lastX + '" y="' + (lastY - 10) + '" text-anchor="' + (n > 1 ? 'end' : 'middle') + '">' + esc(fmtV(series[n - 1].value)) + '</text>';
+    const full = series.slice(0, lastIdx + 1);
+    const pts = full.map((s, i) => r2(xAt(i)) + ',' + r2(yAt(s.value))).join(' ');
+    if (lastIdx >= 0) {
+      const area = r2(xAt(0)) + ',' + (MT + plotH) + ' ' + pts + ' ' + r2(xAt(lastIdx)) + ',' + (MT + plotH);
+      const lastX = r2(xAt(lastIdx)), lastY = r2(yAt(series[lastIdx].value));
+      viz = '<polygon class="area ' + slot + '" points="' + area + '"/>'
+        + '<polyline class="line ' + slot + '" points="' + pts + '"/>'
+        + '<circle class="end-dot ' + slot + '" cx="' + lastX + '" cy="' + lastY + '" r="4"/>'
+        + '<text class="end-label" x="' + lastX + '" y="' + (lastY - 10) + '" text-anchor="' + (lastIdx > 0 ? 'end' : 'middle') + '">' + esc(fmtV(series[lastIdx].value)) + '</text>';
+    }
+    if (hasPartial) {
+      const px = r2(xAt(n - 1)), py = r2(yAt(series[n - 1].value));
+      if (lastIdx >= 0) viz += '<line class="line-partial ' + slot + '" x1="' + r2(xAt(lastIdx)) + '" y1="' + r2(yAt(series[lastIdx].value)) + '" x2="' + px + '" y2="' + py + '"/>'
+        ;
+      viz += '<circle class="partial-dot ' + slot + '" cx="' + px + '" cy="' + py + '" r="4"/>';
+    }
   }
 
-  const data = esc(JSON.stringify({ s: series.map((s) => [s.day, s.value]), k: opts.kind, g: opts.granularity, W, H, ML, MR, MT, MB, view: opts.view }));
+  const data = esc(JSON.stringify({ s: series.map((s) => (s.partial ? [s.day, s.value, 1] : [s.day, s.value])), k: opts.kind, g: opts.granularity, W, H, ML, MR, MT, MB, view: opts.view }));
   return '<figure class="chart" aria-label="' + esc(opts.label) + '">'
-    + '<div class="chart-hit" tabindex="0" role="img" aria-label="' + esc(opts.label + ', ' + n + ' points, latest ' + fmtV(series[n - 1].value)) + '" data-chart="' + data + '">'
+    + '<div class="chart-hit" tabindex="0" role="img" aria-label="' + esc(opts.label + ', ' + n + ' points, latest ' + (hasPartial && lastIdx >= 0 ? fmtV(series[lastIdx].value) + ' complete, ' + fmtV(series[n - 1].value) + ' so far today' : fmtV(series[n - 1].value))) + '" data-chart="' + data + '">'
     + '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" aria-hidden="true">'
     + grid + viz + xLabels
     + '<line class="guide" x1="0" y1="' + MT + '" x2="0" y2="' + (MT + plotH) + '" visibility="hidden"/>'
@@ -203,6 +239,8 @@ function chartPoint(hit, idx) {
   const v = document.createElement('div'); v.className = 'tip-v'; v.textContent = fmtV(c.s[i][1]) + (c.k === 'usd' ? '' : ' calls');
   const d = document.createElement('div'); d.className = 'tip-d'; d.textContent = formatFullDate(c.s[i][0], c.g);
   tip.append(v, d);
+  const pl = partialLabel({ partial: c.s[i][2] === 1 }, c.g);
+  if (pl) { const p = document.createElement('div'); p.className = 'tip-p'; p.textContent = pl; tip.append(p); }
   tip.hidden = false;
   const leftPct = (x / c.W) * 100;
   tip.style.left = leftPct + '%';
@@ -270,13 +308,16 @@ function renderKpis(d, w, s) {
     const el = $('[data-kpi="' + name + '"]');
     $('.num', el).textContent = value;
     $('.delta', el).innerHTML = deltaHtml(delta);
+    // Fase 25.21: el delta compara dias completos (sin hoy); la cifra grande si suma hoy.
+    if (delta && delta.through) $('.delta', el).title = 'Last ' + state.days + ' full days to ' + formatFullDate(delta.through, 'day') + ' vs the ' + state.days + ' before. Today is left out until it ends.';
+    else $('.delta', el).removeAttribute('title');
     $('.delta', el).className = 'delta' + (delta ? (delta.up ? ' up' : ' down') : '');
     $('.win', el).textContent = label;
     if (sub !== undefined) $('.kpi-sub', el).textContent = sub;
     el.dataset.state = 'ready';
   };
-  kpi('calls', fmt(s.callsSum, 0), s.callsDelta, undefined, tf);
-  kpi('revenue', fmtUsd(s.revenueSum), s.revenueDelta, undefined, tf);
+  kpi('calls', fmt(s.callsSum, 0), s.callsDelta, 'MCP tool calls' + (s.callsDelta ? ' · change on full days, today left out' : ''), tf);
+  kpi('revenue', fmtUsd(s.revenueSum), s.revenueDelta, 'usage, USDC (credit purchases excluded)' + (s.revenueDelta ? ' · change on full days' : ''), tf);
   const anon = w.unique_anon_agents || 0;
   kpi('agents', fmt(w.unique_payers + anon, 0), null,
     fmt(w.unique_payers, 0) + ' identified · ' + fmt(anon, 0) + ' anonymous · ' + fmt(d.summary.returning_agents_7d || 0, 0) + ' returning in 7d', wl);
@@ -514,6 +555,7 @@ $('#main').addEventListener('click', (ev) => {
   const btn = ev.target.closest('button');
   if (!btn || btn.disabled) return;
   const ds = btn.dataset;
+  if (ds.signin) { signInAgain(true); return; }
   if (ds.tab) { state.tab = ds.tab; saveState(); renderControls(); if (lastData) render(lastData); return; }
   if (ds.days) { state.days = Number(ds.days); saveState(); if (lastData) render(lastData); else renderControls(); return; }
   if (ds.granularity) { state.granularity = ds.granularity; saveState(); if (lastData) render(lastData); else renderControls(); return; }
@@ -559,28 +601,40 @@ async function load(force) {
     const query = [];
     if (state.internal) query.push('include_internal=1');
     if (force === true) query.push('fresh=1');
-    const res = await fetch('/analytics/data' + (query.length ? '?' + query.join('&') : ''));
-    if (!res.ok) {
-      const msg = res.status === 401 ? 'Cloudflare Access session expired: reload the page to sign in again.'
-        : res.status === 502 ? 'D1 did not answer (server error). Try again in a minute.'
-        : 'HTTP ' + res.status + ' while loading the data.';
-      throw new Error(msg);
+    // redirect:'manual': si Access ya no tiene sesion, su 302 a otro origen llega
+    // como `opaqueredirect` en vez de reventar en un "Failed to fetch" ambiguo.
+    const res = await fetch('/analytics/data' + (query.length ? '?' + query.join('&') : ''), { redirect: 'manual' });
+    const contentType = res.headers.get('content-type') || '';
+    let body = null;
+    if (/json/i.test(contentType)) { try { body = await res.json(); } catch (e) { body = null; } }
+    const verdict = classifyDataResponse({ type: res.type, status: res.status, ok: res.ok, contentType }, body);
+    if (verdict.kind === 'expired') {
+      if (force === true && !reloadedForSession) {
+        // El usuario ha pedido datos frescos: volver a entrar por Access y cargar en fresco al volver.
+        showNotice('info', verdict.message + ' · signing in again…');
+        updated.textContent = 'session expired';
+        signInAgain(true);
+        return;
+      }
+      showNotice('danger', verdict.message + '.', true);
+      updated.textContent = lastData ? 'session expired · showing previous data' : 'session expired';
+      if (!lastData) markNotLoaded();
+      return;
     }
-    const data = await res.json();
+    if (verdict.kind !== 'ok') throw new Error(verdict.message);
+    const data = body;
+    reloadedForSession = false;
     notice.hidden = true;
     render(data);
     lastLoad = Date.now();
     updated.textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (e) {
-    const msg = e && e.message ? e.message : String(e);
-    notice.innerHTML = '<span class="mark danger"></span><span>' + esc(msg) + '</span>';
-    notice.hidden = false;
+    const raw = e && e.message ? e.message : String(e);
+    // Con redirect:'manual' un TypeError aqui es red caida o CORS, no Access.
+    const msg = /failed to fetch|networkerror|load failed/i.test(raw) ? 'Could not reach the server (offline?): ' + raw : raw;
+    showNotice('danger', msg);
     updated.textContent = lastData ? 'showing previous data' : 'not loaded';
-    if (!lastData) {
-      // El detalle va en el aviso de arriba; cada tarjeta solo dice que no tiene datos.
-      $$('[data-panel]').forEach((p) => setError(p.dataset.panel, 'not loaded'));
-      $$('[data-kpi]').forEach((k) => { k.dataset.state = 'error'; $('.num', k).textContent = '–'; });
-    }
+    if (!lastData) markNotLoaded();
   } finally {
     btn.disabled = false;
     btn.setAttribute('aria-busy', 'false');
@@ -589,7 +643,13 @@ async function load(force) {
 }
 
 renderControls();
-load();
+let reloadFresh = false;
+try {
+  reloadFresh = sessionStorage.getItem(RELOAD_FRESH_KEY) === '1';
+  if (reloadFresh) sessionStorage.removeItem(RELOAD_FRESH_KEY);
+} catch (e) { /* private mode */ }
+reloadedForSession = reloadFresh;
+load(reloadFresh);
 
 // Refresco al VOLVER a la pestana, solo si lo que se ve tiene mas de 15 minutos.
 document.addEventListener('visibilitychange', () => {

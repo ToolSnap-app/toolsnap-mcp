@@ -732,17 +732,17 @@ function decodeBase64Pdf(data: string, maxBytes: number): ArrayBuffer {
 
 export const pdfTextExtractTool: McpTool = {
   name: "pdf_text_extract",
-  description: "Extract text from a PDF: url or base64 data. No OCR — text-based PDFs only.",
+  description:
+    "Free, read-only. Extract plain text from a PDF given as a URL (max 20 MB) or inline base64 (max 5 MB), one of the two. Returns text, cut at maxChars with a marker. Text-layer PDFs only: scans return little or nothing (no OCR). Layout and tables are not preserved. Fails if the URL serves HTML, not a PDF.",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "PDF URL (alt. to data)." },
-      data: { type: "string", description: "Base64 PDF, ≤5MB decoded (alt. to url)." },
-      maxChars: { type: "number", description: `Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
+      url: { type: "string", description: "Direct link to the .pdf file, not a viewer page. Not with data." },
+      data: { type: "string", description: "Base64 PDF, max 5 MB decoded. Not with url." },
+      maxChars: { type: "number", description: `Output cap, chars. Default ${DEFAULT_MAX_CHARS}, max ${HARD_MAX_CHARS}.` },
       headers: HEADERS_SCHEMA_PROPERTY,
     },
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("pdf_text_extract is env-aware and must be called via runWithEnv");
   },

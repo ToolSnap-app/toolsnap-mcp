@@ -8,6 +8,7 @@
 [![Base](https://img.shields.io/badge/network-Base%20mainnet-0052FF)](https://base.org)
 [![Cloudflare Workers](https://img.shields.io/badge/runtime-Cloudflare%20Workers-F48120)](https://workers.cloudflare.com)
 [![smithery badge](https://smithery.ai/badge/icosaedro/toolsnap-mcp)](https://smithery.ai/servers/icosaedro/toolsnap-mcp)
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/toolsnap-app/toolsnap-mcp)
 
 **Live endpoint:** `https://mcp.toolsnap.app/mcp`  
 **Server card:** [/.well-known/mcp.json](https://mcp.toolsnap.app/.well-known/mcp.json)  

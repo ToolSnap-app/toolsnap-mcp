@@ -17,18 +17,20 @@ const HANDLED_AT_SERVER =
 
 export const useToolTool: McpTool = {
   name: "use_tool",
-  description: "Free. Run any tool not in tools/list (see tool_catalog). Same pricing as a direct call.",
+  description:
+    "Free wrapper. Runs any catalog tool missing from your tools/list exactly as a direct call: args pass through unchanged and the inner tool's price, payment, result and errors apply verbatim. Its hints are the worst case over the whole catalog: not read-only because some inner tools create a render, a stored file or a ledger entry; never destructive because no catalog tool deletes or overwrites anything. Get the inner tool's name, schema and its own annotations from tool_catalog(tool='<name>') first. A missing or unknown name errors pointing to tool_catalog; it cannot call itself.",
   inputSchema: {
     type: "object",
     properties: {
-      name: { type: "string", description: "Tool name (see tool_catalog)." },
-      args: { type: "object", description: "Args per that tool's inputSchema." },
+      name: { type: "string", description: "Exact tool name from tool_catalog. Not 'use_tool'." },
+      args: { type: "object", description: "Object matching that tool's inputSchema. Omit if none required." },
     },
     required: ["name"],
   },
-  // Dispatches to an arbitrary tool by name, so it inherits that tool's
-  // side effects (e.g. account_deposit) — annotations stay conservative.
-  annotations: { destructiveHint: true, openWorldHint: true },
+  // Annotations live in src/tools/annotations.ts: the worst case over the
+  // catalog (not read-only, never destructive), spelled out in the description
+  // so directories do not read the static hints as contradicting the
+  // pass-through semantics (Glama TDQS v0.1.5 scored Behavior 1/5 on that).
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

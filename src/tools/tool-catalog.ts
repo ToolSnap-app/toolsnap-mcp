@@ -1,6 +1,7 @@
 import type { McpTool } from "../mcp/types.js";
 import type { Env } from "../index.js";
 import { FAMILIES, NOTES } from "./catalog.js";
+import { annotationsFor } from "./annotations.js";
 import { requiresPayment, getToolPrice } from "../x402/middleware.js";
 
 const HANDLED_AT_SERVER =
@@ -38,10 +39,14 @@ function buildFamiliesLayer(env: Env, allTools: McpTool[]): string {
 
 /** Shape of a single tool's detail entry (layer 2). */
 function toolDetail(tool: McpTool, env: Env) {
+  const annotations = annotationsFor(tool.name);
   return {
     name: tool.name,
     price: priceFor(tool.name, env),
     description: tool.description,
+    // Hints of the tool itself (readOnlyHint etc.), so a caller going through
+    // use_tool can judge the inner tool rather than the dispatcher's worst case.
+    ...(annotations ? { annotations } : {}),
     ...(NOTES[tool.name] ? { notes: NOTES[tool.name] } : {}),
     inputSchema: tool.inputSchema,
   };
@@ -103,16 +108,16 @@ async function runToolCatalog(args: Record<string, unknown>, env: Env): Promise<
 
 export const toolCatalogTool: McpTool = {
   name: "tool_catalog",
-  description: "Free. Full catalog. No args → families. family='<id>' → tools. tool='<name>' → detail.",
+  description:
+    "Free, read-only, no network. Browse all 47 tools in 10 families (web, seo, data, documents, images, media, utils, payments, recipes, meta). No args: families with id, label, one-liner, tool count. family='<id>': each tool with name, price, description, notes, inputSchema. tool='<name>': that entry alone; wins over family. Unknown ids error naming the valid families. Run what you find via use_tool.",
   inputSchema: {
     type: "object",
     properties: {
-      family: { type: "string", description: "Family id → its tools." },
-      tool: { type: "string", description: "Tool name → detail." },
+      family: { type: "string", description: "Family id, e.g. 'web', 'data'. Lists its tools with schemas." },
+      tool: { type: "string", description: "Exact tool name, e.g. 'fetch_rendered'. Takes precedence over family." },
     },
     required: [],
   },
-  annotations: { readOnlyHint: true, openWorldHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

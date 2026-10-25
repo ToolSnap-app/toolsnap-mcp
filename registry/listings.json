@@ -1,0 +1,276 @@
+{
+  "$comment": "Directorios y listados de ToolSnap MCP. Fuente de verdad humana: tabla «Tabla de listados e integraciones» de la nota 11 del vault. Este fichero dice QUÉ comprobar en cada fila; lo ejecuta scripts/listings-check.mts y lo usa la skill toolsnap-listings-review. `match` es un trozo único de la primera celda de la fila. `cadence`: weekly = cosas que se mueven (PRs, issues, reclamaciones); monthly = fichas con cifras. Placeholders en `expect`: {version} (server.json), {skill_version} (skills/toolsnap/SKILL.md), {total} (tools en /.well-known/mcp.json), {repo}.",
+  "repo": "ToolSnap-app/toolsnap-mcp",
+  "old_repo": "icosaedro-git/toolsnap-mcp",
+  "listings": [
+    {
+      "id": "official-registry",
+      "match": "Official MCP Registry",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [{ "type": "registry", "name": "app.toolsnap/toolsnap-mcp" }]
+    },
+    {
+      "id": "glama-server",
+      "match": "servers/ToolSnap-app/toolsnap-mcp",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "page",
+          "url": "https://glama.ai/mcp/servers/ToolSnap-app/toolsnap-mcp",
+          "tools": true,
+          "repo": true,
+          "absent": ["first call free"],
+          "capture": { "score": "(\\d{2,3})\\s*%" }
+        }
+      ],
+      "unai_todo": "Glama: si el build de prueba sale verde, pulsar «Build & Release» en /admin/dockerfile (login de Glama)"
+    },
+    {
+      "id": "glama-connector",
+      "match": "Glama connector",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "page",
+          "url": "https://glama.ai/mcp/connectors/app.toolsnap/toolsnap-mcp",
+          "tools": true,
+          "repo": true,
+          "contains": ["Ownership verified"],
+          "capture": { "status": "Status\\s+(\\w+)", "tdqs": "TDQS\\s+([A-F][+-]?)" }
+        }
+      ]
+    },
+    {
+      "id": "pulsemcp",
+      "match": "PulseMCP",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "page",
+          "url": "https://www.pulsemcp.com/servers/toolsnap",
+          "tools": true,
+          "repo": true,
+          "browser_fallback": "PulseMCP devuelve 403 a ToolSnap y a curl; abrir en el navegador integrado y leer la cifra de tools"
+        }
+      ]
+    },
+    {
+      "id": "startupscores",
+      "match": "StartupScores",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "page",
+          "url": "https://startupscores.com/startup/toolsnap-mcp",
+          "repo": true,
+          "capture": { "score": "Current score\\s+(\\d+)", "rank": "Global rank\\s+#?(\\d+)" }
+        },
+        {
+          "type": "page",
+          "url": "https://mcp.toolsnap.app/ywm_J6KVlJWJC9SIIZduQUSkUXlzx1cWFs19o4GYqkM.txt",
+          "via": "local",
+          "label": "fichero de prueba de dominio (no borrar)"
+        }
+      ],
+      "browser_fallback": "La aprobación del operador (ref. SS-WK2EZWMTGN) solo se ve logueado: Managed products en startupscores.com"
+    },
+    {
+      "id": "smithery",
+      "match": "Smithery",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "json",
+          "url": "https://registry.smithery.ai/servers/icosaedro/toolsnap-mcp",
+          "tools_path": "description",
+          "fields": { "listedTools": "tools.length", "deploymentUrl": "deploymentUrl", "security": "security" },
+          "warn_if_contains": { "deploymentUrl": "run.tools" },
+          "warn_note": "el MCP Proxy de Smithery (run.tools) cierra el 2026-10-31"
+        },
+        {
+          "type": "page",
+          "url": "https://smithery.ai/servers/icosaedro/toolsnap-mcp",
+          "tools": true,
+          "capture": { "score": "(\\d{2,3})\\s*/100" }
+        }
+      ]
+    },
+    {
+      "id": "lobehub",
+      "match": "LobeHub — [toolsnap-app-toolsnap-mcp]",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "page",
+          "url": "https://lobehub.com/mcp/toolsnap-app-toolsnap-mcp",
+          "tools": true,
+          "repo": true,
+          "contains": ["{version}", "Claimed"],
+          "capture": { "grade": "ToolSnap MCP\\s+([A-F][+-]?)\\s+PREMIUM" }
+        }
+      ]
+    },
+    {
+      "id": "lobehub-extensions",
+      "match": "gemini-extension / antigravity-plugin",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        { "type": "page", "url": "https://lobehub.com/mcp/toolsnap-app-toolsnap-gemini-extension", "probe": true, "label": "gemela nueva gemini-extension" },
+        { "type": "page", "url": "https://lobehub.com/mcp/toolsnap-app-toolsnap-antigravity-plugin", "probe": true, "label": "gemela nueva antigravity-plugin" }
+      ]
+    },
+    {
+      "id": "hermes",
+      "match": "Hermes",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [{ "type": "gh_pr", "repo": "NousResearch/hermes-agent", "number": 58511 }]
+    },
+    {
+      "id": "awesome-x402",
+      "match": "awesome-x402",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [
+        { "type": "gh_pr", "repo": "xpaysh/awesome-x402", "number": 1945 },
+        { "type": "gh_file", "repo": "xpaysh/awesome-x402", "path": "README.md", "near": "ToolSnap", "tools": true }
+      ]
+    },
+    {
+      "id": "x402-bazaar",
+      "match": "x402 Bazaar",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [{ "type": "manual", "note": "tarea técnica pendiente (facilitator CDP + extensión bazaar); sin comprobación hasta que se haga" }]
+    },
+    {
+      "id": "anthropic-directory",
+      "match": "Directorio de conectores Anthropic",
+      "cadence": "monthly",
+      "owner": "unai",
+      "checks": [{ "type": "manual", "note": "decisión de Unai: ¿perfil directory-safe?" }]
+    },
+    {
+      "id": "punkpeye-remote",
+      "match": "awesome-remote-mcp-servers (punkpeye)",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [{ "type": "gh_pr", "repo": "punkpeye/awesome-remote-mcp-servers", "number": 2532 }]
+    },
+    {
+      "id": "mcp-so",
+      "match": "mcp.so",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [
+        { "type": "gh_issue", "repo": "chatmcp/mcpso", "number": 5908 },
+        { "type": "page", "url": "https://mcp.so/server/toolsnap-mcp/ToolSnap-app", "probe": true, "label": "¿publicada?" }
+      ]
+    },
+    {
+      "id": "mcp-directory",
+      "match": "mcp.directory",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [{ "type": "page", "url": "https://mcp.directory/servers/toolsnap", "tools": true, "probe": true, "label": "¿publicada?" }],
+      "unai_todo": "mcp.directory: si sigue sin publicarse, escribir a hello@mcp.directory desde hello@toolsnap.app"
+    },
+    {
+      "id": "cline",
+      "match": "Cline Marketplace",
+      "cadence": "monthly",
+      "owner": "unai",
+      "checks": [{ "type": "manual", "note": "Unai: probar la instalación en Cline antes de enviar" }]
+    },
+    {
+      "id": "cursor-windsurf",
+      "match": "Cursor / Windsurf",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [{ "type": "manual", "note": "sin proceso de envío; nada que comprobar" }]
+    },
+    {
+      "id": "docker",
+      "match": "Docker MCP Catalog",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [{ "type": "gh_pr", "repo": "docker/mcp-registry", "number": 5962 }]
+    },
+    {
+      "id": "clawhub",
+      "match": "ClawHub",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [
+        {
+          "type": "json",
+          "url": "https://clawhub.ai/api/v1/skills/toolsnap",
+          "tools_path": "skill.description",
+          "fields": { "version": "latestVersion.version", "verdict": "moderation.verdict", "downloads": "skill.stats.downloads" },
+          "expect": { "version": "{skill_version}", "verdict": "clean" }
+        }
+      ]
+    },
+    {
+      "id": "jaw9c-remote",
+      "match": "remote-mcp.com",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [{ "type": "gh_pr", "repo": "jaw9c/awesome-remote-mcp-servers", "number": 1549 }]
+    },
+    {
+      "id": "mcpservers-org",
+      "match": "mcpservers.org",
+      "cadence": "weekly",
+      "owner": "claude",
+      "checks": [
+        { "type": "gh_file", "repo": "wong2/awesome-mcp-servers", "path": "README.md", "near": "toolsnap", "probe": true, "label": "¿aprobada? (mcpservers.org sale de este README)" }
+      ],
+      "browser_fallback": "mcpservers.org da 403 a ToolSnap y a curl; si el README no lo muestra, mirar el email de aprobación en hello@toolsnap.app"
+    },
+    {
+      "id": "mcpmarket",
+      "match": "mcpmarket.com",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [{ "type": "page", "url": "https://mcpmarket.com/server/toolsnap-mcp", "probe": true, "label": "¿publicada?" }],
+      "browser_fallback": "el envío exige navegador sin VPN: mcpmarket.com/submit"
+    },
+    {
+      "id": "cursor-directory",
+      "match": "cursor.directory",
+      "cadence": "monthly",
+      "owner": "unai",
+      "checks": [{ "type": "manual", "note": "falta .mcp.json en el repo (Claude) y login GitHub en cursor.directory (Unai)" }]
+    },
+    {
+      "id": "x402scan",
+      "match": "x402scan / x402-list / agentic.market",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [{ "type": "manual", "note": "tarea técnica pendiente (ruta de descubrimiento x402)" }]
+    },
+    {
+      "id": "x402-org",
+      "match": "x402.org ecosystem",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [{ "type": "manual", "note": "retirada; fila histórica" }]
+    },
+    {
+      "id": "openai-apps",
+      "match": "Codex / ChatGPT apps",
+      "cadence": "monthly",
+      "owner": "claude",
+      "checks": [{ "type": "manual", "note": "Fase 26" }]
+    }
+  ]
+}

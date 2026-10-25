@@ -87,7 +87,6 @@ export const imageUpscaleTool: McpTool = {
     },
     required: ["image_url"],
   },
-  annotations: { destructiveHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

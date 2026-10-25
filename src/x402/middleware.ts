@@ -619,8 +619,17 @@ export async function verifyPayment(
   }
 
   // --- 6. Anti-replay: KV nonce check ---
+  // Best-effort pre-check. The authoritative replay guard is on-chain: USDC's
+  // authorizationState makes transferWithAuthorization revert for a reused
+  // nonce, so a KV outage (quota exhausted, Fase 25.14 incident) must degrade
+  // to "let the chain decide", never to a 500 for every paid call.
   const nonceKey = nonce.toLowerCase();
-  const existingTx = await env.X402_NONCES.get(nonceKey);
+  let existingTx: string | null = null;
+  try {
+    existingTx = await env.X402_NONCES.get(nonceKey);
+  } catch (err) {
+    console.warn("x402 nonce KV read failed, relying on on-chain replay guard:", err instanceof Error ? err.message : String(err));
+  }
   if (existingTx !== null) {
     return {
       ok: false,
@@ -675,12 +684,45 @@ export async function verifyPayment(
  * is returned immediately after submission.
  *
  * After successful submission, the nonce is written to KV with a 7-day TTL.
+ * That write is best-effort: once the tx is submitted the payer HAS paid, so
+ * nothing after that point may throw (a throw here used to make the deposit
+ * handler answer "not charged" and skip the credit while the USDC had moved,
+ * see H11 in .claude/security-review/plan-seguridad.md). `nonceRecorded`
+ * tells the caller whether the KV pre-check still covers this nonce; the
+ * on-chain authorizationState covers it regardless.
  */
+export interface SettlementResult {
+  txHash: string;
+  /** false when the KV nonce write failed (quota or outage); the payment itself succeeded. */
+  nonceRecorded: boolean;
+}
+
+/**
+ * Mark a settled nonce as used in KV (7-day TTL). Never throws: returns false
+ * when KV refuses the write, so callers can alert instead of failing a
+ * payment that already went through.
+ */
+export async function recordSettledNonce(
+  env: Pick<X402Env, "X402_NONCES">,
+  nonce: string,
+  txHash: string
+): Promise<boolean> {
+  try {
+    await env.X402_NONCES.put(nonce.toLowerCase(), txHash, {
+      expirationTtl: 604_800,
+    });
+    return true;
+  } catch (err) {
+    console.warn("x402 nonce KV write failed after settlement:", err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
 export async function settlePayment(
   authorization: Eip3009Authorization,
   signature: string,
   env: X402Env
-): Promise<{ txHash: string }> {
+): Promise<SettlementResult> {
   const { from, to, value, validAfter, validBefore, nonce } = authorization;
 
   // Normalise the relayer key: trim whitespace and ensure 0x prefix.
@@ -714,10 +756,8 @@ export async function settlePayment(
     ],
   });
 
-  // Mark nonce as used in KV (TTL: 7 days = 604 800 s)
-  await env.X402_NONCES.put(nonce.toLowerCase(), txHash, {
-    expirationTtl: 604_800,
-  });
+  // The payer has paid from here on: nothing below may throw.
+  const nonceRecorded = await recordSettledNonce(env, nonce, txHash);
 
-  return { txHash };
+  return { txHash, nonceRecorded };
 }

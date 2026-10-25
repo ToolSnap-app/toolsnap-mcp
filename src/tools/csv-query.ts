@@ -509,22 +509,22 @@ async function runCsvQuery(
 
 export const csvQueryTool: McpTool = {
   name: "csv_query",
-  description: "Query a CSV: select/filter/sort/limit. One of url or csv.",
+  description:
+    "Free, read-only. Query a comma-separated CSV with a header row, from a URL (max 5 MB, streamed) or inline text, one of the two: select columns, filter rows, sort, limit. Returns {meta:{returned_rows,columns,total_rows,truncated},rows:[{column:value}]}, all values strings, or CSV text with format='csv'. One filter condition, no joins or aggregates. Unknown select columns and bad filters error with the valid names or operators. Over 5 MB: csv_query_xl (paid, 100 MB).",
   inputSchema: {
     type: "object",
     properties: {
-      url: { type: "string", description: "CSV URL (alt. to csv)." },
-      csv: { type: "string", description: "Raw CSV (alt. to url)." },
-      select: { type: "string", description: "Columns, comma-separated." },
-      filter: { type: "string", description: "'col op value'." },
-      sort_by: { type: "string", description: "Sort column." },
-      sort_dir: { type: "string", enum: ["asc", "desc"], description: "Default asc." },
-      limit: { type: "number", description: "Default 500, max 5000." },
-      format: { type: "string", enum: ["json", "csv"], description: "Default json." },
+      url: { type: "string", description: "CSV URL, max 5 MB. Not with csv." },
+      csv: { type: "string", description: "Inline CSV text. Not with url." },
+      select: { type: "string", description: "Columns to keep, comma-separated, exact header names. Omit for all." },
+      filter: { type: "string", description: "'column op value'. Ops: = != contains startswith endswith (text, case-insensitive), > >= < <= (numeric). E.g. 'age >= 30'." },
+      sort_by: { type: "string", description: "Column to sort by; numeric when values parse as numbers, else text." },
+      sort_dir: { type: "string", enum: ["asc", "desc"], description: "asc (default) or desc." },
+      limit: { type: "number", description: "Rows to return. Default 500, max 5000; over it meta.truncated=true." },
+      format: { type: "string", enum: ["json", "csv"], description: "json (default): {meta,rows}. csv: text with header row." },
       headers: HEADERS_SCHEMA_PROPERTY,
     },
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("csv_query is env-aware and must be called via runWithEnv");
   },
@@ -564,7 +564,6 @@ export const csvQueryXlTool: McpTool = {
     },
     required: ["url"],
   },
-  annotations: { readOnlyHint: true },
   run() {
     throw new Error("csv_query_xl is env-aware and must be called via runWithEnv");
   },

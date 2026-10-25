@@ -1,4 +1,5 @@
 import type { Env } from "../index.js";
+import { isD1Unavailable } from "../d1-errors.js";
 import { sendTelegram } from "./telegram.js";
 import { classifyToolError } from "./error-classification.js";
 import { isProbeClient } from "../analytics/surface.js";
@@ -211,6 +212,8 @@ export interface WindowRow {
   payer: string | null;
 }
 
+const D1_DOWN_DEDUPE_SEC = 60 * 60;
+
 /** Deja alertar una sola vez por ventana TTL. Sin KV alerta igualmente (best effort). */
 async function shouldAlert(kv: KVNamespace | undefined, key: string, ttlSec: number): Promise<boolean> {
   if (!kv) return true;
@@ -335,12 +338,32 @@ export async function loadHealthWindow(db: D1Database, now: number): Promise<Win
 export async function checkServerHealth(env: Env, now: Date = new Date()): Promise<void> {
   const nowMs = now.getTime();
 
-  const [windowRows, silence] = await Promise.all([
-    loadHealthWindow(env.PREPAID_DB, nowMs),
-    env.PREPAID_DB.prepare(`SELECT count(*) AS n FROM analytics_events WHERE ts >= ?`)
-      .bind(nowMs - SILENCE_WINDOW_MS)
-      .first<{ n: number }>(),
-  ]);
+  let windowRows: Awaited<ReturnType<typeof loadHealthWindow>>;
+  let silence: { n: number } | null;
+  try {
+    [windowRows, silence] = await Promise.all([
+      loadHealthWindow(env.PREPAID_DB, nowMs),
+      env.PREPAID_DB.prepare(`SELECT count(*) AS n FROM analytics_events WHERE ts >= ?`)
+        .bind(nowMs - SILENCE_WINDOW_MS)
+        .first<{ n: number }>(),
+    ]);
+  } catch (err) {
+    if (!isD1Unavailable(err)) throw err;
+    // Fase E — D1 sin cuota: un solo aviso por hora, sin relanzar (no es un
+    // fallo del cron en si y no debe disparar tambien el aviso de cron).
+    console.warn("health: D1 unavailable:", err instanceof Error ? err.message : String(err));
+    if (await shouldAlert(env.X402_NONCES, "health:d1-unavailable", D1_DOWN_DEDUPE_SEC)) {
+      await sendTelegram(
+        env,
+        [
+          `🔴 *D1 sin cuota / no disponible*`,
+          `Las consultas a D1 fallan (${err instanceof Error ? err.message.slice(0, 160) : "error"}).`,
+          `OAuth, prepago y panel responden 503/-32000; las tools gratuitas siguen. La cuota se repone a las 00:00 UTC.`,
+        ].join("\n")
+      ).catch(() => {});
+    }
+    return;
+  }
 
   // --- 1. Silencio ---------------------------------------------------------
   const eventsInWindow = silence?.n ?? 0;

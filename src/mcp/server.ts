@@ -34,9 +34,12 @@ import {
 import { mcpDiscoveryFields } from "../x402/discovery.js";
 import { writeEvent, type AnalyticsEvent } from "../analytics/logger.js";
 import { classifySurface, persistSessionClient, readSessionClient, anonPayerId } from "../analytics/surface.js";
+import { isD1Unavailable, d1UnavailableRpc } from "../d1-errors.js";
 import { verifyApiKey, touchKey, accountAddress, accountExists, type VerifiedKey } from "../fiat/keys.js";
 import type { VerifiedOAuthToken } from "../oauth/tokens.js";
 import { VIDEO_PAYMENT_CONTEXT_KEY, type VideoPaymentContext } from "../tools/video-generate.js";
+import { alertNonceNotRecorded } from "../x402/nonce-alert.js";
+import type { SettlementResult } from "../x402/middleware.js";
 
 /**
  * Fase 13.1b — attach payer/rail info to video_generate's args (under a
@@ -227,9 +230,11 @@ async function handleAccountDeposit(
     return buildDepositRequiredResponse(id, env, v.reason);
   }
 
-  // Settle on-chain ONCE for the whole deposit.
+  // Settle on-chain ONCE for the whole deposit. settlePayment only throws
+  // BEFORE the transfer is submitted, so "not charged" below is true; a KV
+  // failure after the transfer comes back as nonceRecorded=false instead.
   const depositStart = Date.now();
-  let settlement: { txHash: string };
+  let settlement: SettlementResult;
   try {
     settlement = await settlePayment(v.authorization!, v.signature!, env);
   } catch (err) {
@@ -249,6 +254,16 @@ async function handleAccountDeposit(
     return successResponse(id, {
       content: [{ type: "text", text: `Deposit settlement failed (not charged): ${msg}` }],
       isError: true,
+    });
+  }
+
+  if (!settlement.nonceRecorded) {
+    // The ledger row written by creditDeposit below keeps the nonce anyway.
+    alertNonceNotRecorded(env, ctx, {
+      kind: "deposit",
+      payer: v.payer ?? "anon",
+      txHash: settlement.txHash,
+      nonce: v.authorization!.nonce,
     });
   }
 
@@ -1219,7 +1234,7 @@ export async function dispatch(
         }
 
         // Step 6: settle on-chain (only if tool succeeded and not a free call)
-        let settlement: { txHash: string } | null = null;
+        let settlement: SettlementResult | null = null;
         try {
           settlement = await settlePayment(
             verifyResult.authorization!,
@@ -1227,9 +1242,11 @@ export async function dispatch(
             env
           );
         } catch (err) {
-          // Settlement failure after execution: log but still return the tool result.
-          // The nonce has NOT been written to KV, so the client could retry settlement,
-          // but we surface the error in _meta so the caller is aware.
+          // Settlement failure BEFORE the transfer was submitted: log but still
+          // return the tool result. The nonce has NOT been written to KV, so the
+          // client could retry settlement, but we surface the error in _meta so
+          // the caller is aware. (A KV failure after the transfer no longer
+          // lands here: it comes back as nonceRecorded=false.)
           const settleErr = err instanceof Error ? err.message : String(err);
           log({
             toolName,
@@ -1252,6 +1269,15 @@ export async function dispatch(
                 payer,
               },
             },
+          });
+        }
+
+        if (!settlement.nonceRecorded) {
+          alertNonceNotRecorded(env, ctx, {
+            kind: "pay_per_call",
+            payer,
+            txHash: settlement.txHash,
+            nonce: verifyResult.authorization!.nonce,
           });
         }
 
@@ -1393,18 +1419,27 @@ export async function handleMcpRequest(
     return { response: JSON.stringify(err), status: 400 };
   }
 
-  const result = await dispatch(
-    request,
-    env,
-    isAdmin,
-    ctx,
-    clientUA,
-    sessionId,
-    isInternal,
-    rawApiKey,
-    oauthIdentity,
-    clientIp
-  );
+  let result: JsonRpcResponse | null;
+  try {
+    result = await dispatch(
+      request,
+      env,
+      isAdmin,
+      ctx,
+      clientUA,
+      sessionId,
+      isInternal,
+      rawApiKey,
+      oauthIdentity,
+      clientIp
+    );
+  } catch (err) {
+    // Fase E — D1 out of quota/unavailable: readable JSON-RPC error, not a 1101.
+    if (!isD1Unavailable(err)) throw err;
+    console.warn("D1 unavailable in dispatch:", err instanceof Error ? err.message : String(err));
+    if (request.id === undefined) return { response: null, status: 202 };
+    return { response: JSON.stringify(d1UnavailableRpc(request.id ?? null)), status: 200 };
+  }
 
   if (result === null) {
     // Notification — no response body

@@ -171,7 +171,6 @@ export const videoGenerateTool: McpTool = {
     },
     required: ["prompt"],
   },
-  annotations: { destructiveHint: false },
   run() {
     throw new Error(HANDLED_AT_SERVER);
   },

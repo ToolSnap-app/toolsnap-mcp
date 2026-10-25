@@ -356,7 +356,8 @@ export function buildOpenApi(env: Env): Record<string, unknown> {
       version: "1.0.0",
       description:
         "Paid ToolSnap tools over plain HTTP with x402 v2 (USDC on Base). The full catalog, free tools included, is served over MCP at https://mcp.toolsnap.app/mcp.",
-      contact: { url: PUBLIC_ORIGIN },
+      // x402scan reads info.contact.email to verify ownership of the server.
+      contact: { url: PUBLIC_ORIGIN, email: "support@toolsnap.app" },
     },
     servers: [{ url: PUBLIC_ORIGIN }],
     paths,

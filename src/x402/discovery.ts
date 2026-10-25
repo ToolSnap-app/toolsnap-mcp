@@ -6,7 +6,7 @@
  * bills by, so nothing here can advertise a price the gate won't charge:
  *
  *  1. `extensions.bazaar` declarations — the MCP flavour goes into every MCP
- *     402 (error.data), the HTTP flavour into every HTTP 402 below. Shapes
+ *     402 (structuredContent), the HTTP flavour into every HTTP 402. Shapes
  *     mirror @x402/extensions/bazaar (createMcpDiscoveryExtension /
  *     createBodyDiscoveryExtension) byte for byte.
  *  2. POST /x402/tools/<name> (src/x402/http-door.ts) — an HTTP door onto
@@ -232,12 +232,23 @@ export function resourceMetadata(toolName: string): Record<string, unknown> {
   return { ...SERVICE_METADATA, ...(tags.length ? { tags } : {}) };
 }
 
+/**
+ * Catalog identifier of an MCP tool: `https://<server>/mcp#<tool>`, the shape of
+ * every MCP entry in the live Bazaar. Unlike `mcp://tool/<tool>` it tells the
+ * buyer which server to connect to.
+ */
+export function mcpResourceUrl(toolName: string): string {
+  return `${PUBLIC_ORIGIN}/mcp#${toolName}`;
+}
+
 /** Discovery fields folded into the MCP 402 (buildPaymentRequiredResponse). */
 export function mcpDiscoveryFields(toolName: string, priceUSDC: string) {
   const bazaar = bazaarMcpExtension(toolName);
   return {
     description: resourceDescription(toolName, priceUSDC),
-    resource: resourceMetadata(toolName),
+    // `url` rides in the metadata so the 402 advertises it: spec clients echo
+    // the 402's resource in their payload, and that echo is what CDP catalogs.
+    resource: { ...resourceMetadata(toolName), url: mcpResourceUrl(toolName) },
     extensions: bazaar ? { bazaar } : {},
   };
 }

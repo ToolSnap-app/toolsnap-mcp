@@ -228,11 +228,12 @@ claude mcp add --transport http toolsnap https://mcp.toolsnap.app/mcp --header "
 - `Lost a key? Keys are revocable and reissuable — contact support@toolsnap.app (self-serve portal coming).`
 
 ### 4. Paying with x402 (crypto rail)
-`Paid tools respond with HTTP 402 + payment requirements. A capable client signs an EIP-3009 USDC authorization (Base mainnet) and retries; we verify and settle on-chain. No account, no key — the wallet is the identity.`
+`Paid tools answer an unpaid call with the x402 v2 payment requirements, in the shape of the spec's MCP transport: a tool result with `isError: true`, the requirements in `structuredContent` and the same JSON in the first text block. A capable client signs an EIP-3009 USDC authorization (Base mainnet) and retries; we verify and settle on-chain. No account, no key — the wallet is the identity.`
 `Most MCP clients can't sign x402 out of the box. That's what the pay-proxy is for:`
 
 ### 5. The pay-proxy
 `A tiny local stdio MCP server that wraps the remote endpoint. On a 402 it signs with your agent's wallet and retries automatically. The key never leaves your machine; only signatures travel.`
+`The 402 now follows the spec (isError + structuredContent, no longer a JSON-RPC error). Download pay-proxy again if your copy is older: it still reads both shapes, but copies from before 2026-10 only know the old one.`
 ```json
 { "mcpServers": { "toolsnap": { "command": "node", "args": ["/ABS/PATH/toolsnap-mcp/scripts/pay-proxy.mjs"] } } }
 ```
@@ -259,7 +260,7 @@ claude mcp add --transport http toolsnap https://mcp.toolsnap.app/mcp --header "
 1. **The agent creates it itself.** `When your agent hits a paid tool without a wallet, ToolSnap points it to the free wallet_setup tool. That tool doesn't generate anything on our servers — it hands your agent an open, auditable procedure to generate the key on its own machine and store it in the OS keychain (Keychain / Credential Manager / Secret Service, with a locked-down file fallback on headless Linux). The private key never passes through the conversation or our infrastructure.`
 2. **You get the public address (and a QR).** `The agent shows you its public 0x… address and an EIP-681 QR. A public address is safe to share — it can only receive.`
 3. **You fund it.** `Send USDC on Base from your usual wallet. Signing that transfer is the only irreducibly human step.`
-4. **Wire the pay-proxy (once).** `A funded wallet isn't enough: your MCP client must answer the 402 charge (sign + retry), and most can't. The pay-proxy does it for you — point your client at it and payments become invisible. See Docs §5.`
+4. **Wire the pay-proxy (once).** `A funded wallet isn't enough: your MCP client must answer the 402 charge (sign + retry), and most can't. The pay-proxy does it for you — point your client at it and payments become invisible. The 402 now comes in the x402 spec shape (isError + structuredContent), so download a fresh copy of the pay-proxy if you got one earlier. See Docs §5.`
 5. **Done.** `Your agent now pays per call. Ask it for its address anytime.`
 
 ### Callouts (use exactly)

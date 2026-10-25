@@ -25,7 +25,7 @@ const toc = [
       <li><strong>The agent creates it itself.</strong> When your agent hits a paid tool without a wallet, ToolSnap points it to the free wallet_setup tool. That tool doesn't generate anything on our servers — it hands your agent an open, auditable procedure to generate the key on its own machine and store it in the OS keychain (Keychain / Credential Manager / Secret Service, with a locked-down file fallback on headless Linux). The private key never passes through the conversation or our infrastructure.</li>
       <li><strong>You get the public address (and a QR).</strong> The agent shows you its public 0x… address and an EIP-681 QR. A public address is safe to share — it can only receive.</li>
       <li><strong>You fund it.</strong> Send USDC on Base from your usual wallet. Signing that transfer is the only irreducibly human step.</li>
-      <li><strong>Wire the pay-proxy (once).</strong> A funded wallet isn't enough: your MCP client must answer the 402 charge (sign + retry), and most can't. The pay-proxy does it for you — point your client at it and payments become invisible. See <a href="/docs#pay-proxy">Docs &sect;5</a>.</li>
+      <li><strong>Wire the pay-proxy (once).</strong> A funded wallet isn't enough: your MCP client must answer the 402 charge (sign + retry), and most can't. The pay-proxy does it for you — point your client at it and payments become invisible. The 402 now comes in the x402 spec shape (<code>isError</code> + <code>structuredContent</code>), so download a fresh copy of the pay-proxy if you got one earlier. See <a href="/docs#pay-proxy">Docs &sect;5</a>.</li>
       <li><strong>Done.</strong> Your agent now pays per call. Ask it for its address anytime.</li>
     </ol>
 

@@ -7,7 +7,7 @@
 [![x402](https://img.shields.io/badge/payment-x402%20v2-orange)](https://x402.org)
 [![Base](https://img.shields.io/badge/network-Base%20mainnet-0052FF)](https://base.org)
 [![Cloudflare Workers](https://img.shields.io/badge/runtime-Cloudflare%20Workers-F48120)](https://workers.cloudflare.com)
-[![smithery badge](https://smithery.ai/badge/icosaedro/toolsnap-mcp)](https://smithery.ai/servers/icosaedro/toolsnap-mcp)
+[![LightNow capabilities](https://lightnow.ai/badge/app.toolsnap/toolsnap-mcp)](https://lightnow.ai/servers/app.toolsnap/toolsnap-mcp)
 [![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/toolsnap-app/toolsnap-mcp)
 
 **Live endpoint:** `https://mcp.toolsnap.app/mcp`  

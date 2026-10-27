@@ -1,6 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "toolsnap-mcp",
+  // ToolSnap account. CI deploys with an account-owned token scoped to this
+  // Worker only (Editor), which cannot list accounts, so the ID must be here.
+  "account_id": "561a4c3a5324b4554556517bd1929bc1",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "workers_dev": false,

@@ -11,7 +11,7 @@
     "start": "tsx scripts/stdio-server.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261019.1",
+    "@cloudflare/workers-types": "^5.20261021.1",
     "tsx": "^4.23.15",
     "typescript": "^5.8.3",
     "wrangler": "^4.151.3"

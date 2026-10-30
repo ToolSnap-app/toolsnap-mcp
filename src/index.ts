@@ -9,6 +9,7 @@ import { checkSurfaceDigest } from "./alerts/surface-digest.js";
 import { checkServerHealth } from "./alerts/health.js";
 import { recordCronOk, recordCronError } from "./alerts/cron-status.js";
 import { sendTelegram } from "./alerts/telegram.js";
+import { checkDeployWatch } from "./alerts/deploy-watch.js";
 import { looksLikeApiKey, issueKey, revokeKey, accountExists, accountAddress, verifyApiKey, touchKey } from "./fiat/keys.js";
 import { debitBalance, refundDebit, getBalanceMicro, microToUsdc, usdcToMicro } from "./x402/prepaid.js";
 import { handleCmsAuthStart, handleCmsAuthCallback } from "./cms-auth.js";
@@ -101,6 +102,14 @@ export interface Env {
   // Optional — the scheduled alert handler no-ops when either is missing.
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
+
+  // Accion A14 — alerta de despliegues inesperados (src/alerts/deploy-watch.ts).
+  // VIGIA_CF_TOKEN: token de SOLO LECTURA (Workers Scripts Read en la cuenta
+  // ToolSnap); set via: wrangler secret put VIGIA_CF_TOKEN. Sin el, la
+  // vigilancia no hace nada. Las otras dos son vars normales (wrangler.jsonc).
+  VIGIA_CF_TOKEN?: string;
+  VIGIA_ACCOUNT_ID?: string;
+  VIGIA_WORKERS?: string;
 
   // Fase 25.3 — directory-listing API keys (set via: wrangler secret put
   // SMITHERY_API_KEY / GLAMA_API_KEY). Both optional — analytics/directory-
@@ -1332,7 +1341,8 @@ const handler = {
   //   "*/5 * * * *" (5-min)  — X Agent publisher (Fase 22.1): publishes any
   //                            due `scheduled` row respecting depends_on order,
   //                            + vigilancia de salud (Fase 25.9): tools rotas
-  //                            y silencio total del servidor.
+  //                            y silencio total del servidor, + vigilancia
+  //                            de despliegues inesperados (A14).
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Fase 25.9 — un cron que revienta en silencio es de las pocas cosas que
     // SI requieren atencion y que hasta ahora solo dejaban un console.error
@@ -1386,6 +1396,8 @@ const handler = {
       ctx.waitUntil(runTask("x-agent-publisher", runXPublisher(env)));
       // Vigilancia agregada: tools rotas y silencio total (src/alerts/health.ts).
       ctx.waitUntil(runTask("health", checkServerHealth(env)));
+      // Accion A14 — despliegues que no vienen del workflow (src/alerts/deploy-watch.ts).
+      ctx.waitUntil(runTask("deploy-watch", checkDeployWatch(env)));
       return;
     }
 

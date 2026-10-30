@@ -241,6 +241,31 @@ npm run typecheck
 npm run deploy
 ```
 
+Production deploys come from `.github/workflows/deploy.yml` (push to `main`).
+
+### Alerta de despliegues inesperados
+
+Vigila que nadie publique `toolsnap-mcp` ni `toolsnap-portal` fuera del workflow (acción A14 del plan de seguridad). Corre en el cron de 5 minutos que ya existe ([`src/alerts/deploy-watch.ts`](src/alerts/deploy-watch.ts)): lee los últimos deployments de cada Worker por la API de Cloudflare con un token de solo lectura y, si hay uno nuevo cuya versión no está registrada como esperada, avisa por Telegram (el canal de las demás alertas) con Worker, versión, fecha, `author_email`, `source` y mensaje. La primera pasada sin estado solo guarda el último deployment.
+
+Las versiones esperadas viven en el KV `X402_NONCES`, claves `esperado:{worker}:{versionId}` (caducan a los 90 días); el último visto, en `ultimo-visto:{worker}`. El workflow registra la versión tras `wrangler deploy`. Cualquier otra cosa avisa, también un `wrangler secret put` (crea una versión nueva): si lo has hecho tú, regístrala.
+
+**Deploy manual desde el Mac** (o tras un `wrangler secret put`):
+
+```bash
+CLOUDFLARE_API_TOKEN=... scripts/registrar-deploy.sh toolsnap-mcp
+```
+
+Hazlo en los tres minutos siguientes al deploy: es el margen de cortesía antes de que la alerta salga. El token necesita Workers Scripts Read y Workers KV Storage Edit en la cuenta ToolSnap. `toolsnap-portal` se despliega desde otro repositorio: su workflow tiene que llamar a este mismo script con `toolsnap-portal`.
+
+**Qué hay que poner (una sola vez):**
+
+```bash
+npx wrangler secret put VIGIA_CF_TOKEN      # token de solo lectura: Workers Scripts Read, cuenta ToolSnap
+# TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID ya existen (alertas de error); no hay que tocarlos.
+```
+
+Además, el token `CLOUDFLARE_API_TOKEN` del environment `production` de GitHub necesita el permiso **Workers KV Storage: Edit** (cuenta ToolSnap) para que el paso «Register deployed version as expected» funcione; sin él, cada deploy del workflow dará una alerta. Pon el secret y el permiso **antes** de fusionar esta PR.
+
 ---
 
 ## Stack

@@ -104,8 +104,8 @@ export interface Env {
   TELEGRAM_CHAT_ID?: string;
 
   // Accion A14 — alerta de despliegues inesperados (src/alerts/deploy-watch.ts).
-  // VIGIA_CF_TOKEN: token de SOLO LECTURA (Workers Scripts Read en la cuenta
-  // ToolSnap); set via: wrangler secret put VIGIA_CF_TOKEN. Sin el, la
+  // VIGIA_CF_TOKEN: token de SOLO LECTURA (Workers Metadata Read-Only en la
+  // cuenta ToolSnap); set via: wrangler secret put VIGIA_CF_TOKEN. Sin el, la
   // vigilancia no hace nada. Las otras dos son vars normales (wrangler.jsonc).
   VIGIA_CF_TOKEN?: string;
   VIGIA_ACCOUNT_ID?: string;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Accion A14: registra como ESPERADA la version que acaba de desplegarse de un
+# Accion A14: registra como ESPERADO el deployment que acaba de hacerse de un
 # Worker, para que la vigilancia (src/alerts/deploy-watch.ts) no avise.
 #
 #   CLOUDFLARE_API_TOKEN=... scripts/registrar-deploy.sh <worker>
@@ -8,8 +8,9 @@
 # mano tras un despliegue hecho desde el Mac (o tras un `wrangler secret put`,
 # que crea una version nueva). Lee el deployment mas reciente del Worker y
 # escribe `esperado:{worker}:{versionId}` en el KV de X402_NONCES (caduca a los
-# 90 dias). El token necesita Workers Scripts Read y Workers KV Storage Edit en
-# la cuenta. No imprime el token ni ninguna respuesta de la API.
+# 90 dias). Se registra el DEPLOYMENT y no la version para que un rollback a
+# una version ya conocida siga avisando. El token necesita Workers Metadata
+# Read-Only (o Scripts Read) y Workers KV Storage Edit en la cuenta. No imprime el token ni ninguna respuesta de la API.
 #
 # Variables opcionales: CF_ACCOUNT_ID, KV_NAMESPACE_ID.
 set -euo pipefail
@@ -37,17 +38,14 @@ const headers = { Authorization: "Bearer " + token };
 const dep = await fetch(api + "/workers/scripts/" + encodeURIComponent(worker) + "/deployments", { headers });
 if (!dep.ok) { console.error("no se pudo leer los deployments de " + worker + ": HTTP " + dep.status); process.exit(1); }
 const latest = (await dep.json()).result?.deployments?.[0];
-const versions = (latest?.versions ?? []).map((v) => v.version_id);
-if (!versions.length) { console.error("el Worker " + worker + " no tiene versiones desplegadas"); process.exit(1); }
+if (!latest?.id) { console.error("el Worker " + worker + " no tiene deployments"); process.exit(1); }
 
-for (const id of versions) {
-  const key = encodeURIComponent("esperado:" + worker + ":" + id);
-  const res = await fetch(api + "/storage/kv/namespaces/" + ns + "/values/" + key + "?expiration_ttl=7776000", {
-    method: "PUT",
-    headers: { ...headers, "Content-Type": "text/plain" },
-    body: new Date().toISOString(),
-  });
-  if (!res.ok) { console.error("no se pudo registrar " + id + ": HTTP " + res.status + (res.status === 403 ? " (falta Workers KV Storage Edit)" : "")); process.exit(1); }
-  console.log("registrada " + worker + " " + id);
-}
+const key = encodeURIComponent("esperado:" + worker + ":dep:" + latest.id);
+const res = await fetch(api + "/storage/kv/namespaces/" + ns + "/values/" + key + "?expiration_ttl=7776000", {
+  method: "PUT",
+  headers: { ...headers, "Content-Type": "text/plain" },
+  body: new Date().toISOString(),
+});
+if (!res.ok) { console.error("no se pudo registrar el deployment " + latest.id + ": HTTP " + res.status + (res.status === 403 ? " (falta Workers KV Storage Edit)" : "")); process.exit(1); }
+console.log("registrado " + worker + " deployment " + latest.id);
 '

@@ -7,7 +7,13 @@
  *  - new deployment NOT registered → one Telegram alert with Worker, version,
  *    date, author, source and message;
  *  - a deploy so fresh the workflow may still be registering it waits a pass;
- *  - a failed Telegram send is retried instead of being marked as seen;
+ *  - registration is per DEPLOYMENT id, and a rollback always alerts even to an
+ *    already registered version (review of PR #144);
+ *  - the alert text must parse under Telegram's legacy Markdown (the fake
+ *    Telegram rejects stray `_`, `*`, `[` outside code spans, like the real one);
+ *  - a failed Telegram send is retried (and warned about), and after 1 h it
+ *    throws so the cron pager hears about it;
+ *  - past 5 unexpected deployments the last alert says "y N más";
  *  - no VIGIA_CF_TOKEN → does nothing; no secret value is ever logged.
  *
  * Pure logic — fake KV, captured fetch. No network.
@@ -40,9 +46,23 @@ function assert(name: string, condition: boolean, detail = ""): void {
 const NOW = Date.parse("2026-10-30T12:00:00Z");
 const OLD = "2026-10-30T10:00:00.000Z";
 const FRESH = "2026-10-30T11:59:00.000Z";
+/** Past the 3 min grace, under the 1 h undeliverable limit. */
+const MID = "2026-10-30T11:30:00.000Z";
 
 function dep(id: string, version: string, createdOn = OLD, extra: Partial<Deployment> = {}): Deployment {
   return { id, created_on: createdOn, versions: [{ version_id: version, percentage: 100 }], ...extra };
+}
+
+/**
+ * Telegram's legacy Markdown: outside code spans a lone `_`, `*` or `[` is a
+ * parse error (400). Code spans (backticks) may hold anything.
+ */
+function parsesAsLegacyMarkdown(text: string): boolean {
+  const ticks = (text.match(/`/g) ?? []).length;
+  if (ticks % 2 !== 0) return false;
+  const outside = text.replace(/`[^`]*`/g, "");
+  if (/[_\[]/.test(outside)) return false;
+  return (outside.match(/\*/g) ?? []).length % 2 === 0;
 }
 
 class FakeKv {
@@ -76,7 +96,9 @@ async function pass(opts: {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("https://api.telegram.org/")) {
-      alerts.push(JSON.parse(String(init?.body)).text as string);
+      const text = JSON.parse(String(init?.body)).text as string;
+      if (!parsesAsLegacyMarkdown(text)) return new Response('{"description":"can\'t parse entities"}', { status: 400 });
+      alerts.push(text);
       return new Response("{}", { status: opts.telegramOk === false ? 500 : 200 });
     }
     const m = url.match(/\/workers\/scripts\/([^/]+)\/deployments$/);
@@ -137,7 +159,7 @@ async function run(): Promise<void> {
       annotations: { "workers/message": "fix `thing`", "workers/triggered_by": "upload" },
     })
   );
-  for (const part of ["toolsnap-mcp", "v2", OLD, "someone_x@example.com", "wrangler", "upload", "fix 'thing'"]) {
+  for (const part of ["toolsnap-mcp", "d2", "v2", OLD, "someone_x@example.com", "wrangler", "upload", "disparado por", "fix 'thing'"]) {
     assert(`alert carries "${part}"`, text.includes(part), text);
   }
 
@@ -153,7 +175,7 @@ async function run(): Promise<void> {
   {
     const kv = new FakeKv();
     kv.store.set(seenKey("toolsnap-mcp"), "d1");
-    kv.store.set(expectedKey("toolsnap-mcp", "v2"), "ci");
+    kv.store.set(expectedKey("toolsnap-mcp", "d2"), "ci");
     const { alerts } = await pass({ kv, deployments: { "toolsnap-mcp": [dep("d2", "v2"), dep("d1", "v1")] } });
     assert("registered new version: silence", alerts.length === 0);
     assert("registered new version: seen updated", kv.store.get(seenKey("toolsnap-mcp")) === "d2");
@@ -190,7 +212,7 @@ async function run(): Promise<void> {
   {
     const kv = new FakeKv();
     kv.store.set(seenKey("toolsnap-mcp"), "d1");
-    kv.store.set(expectedKey("toolsnap-mcp", "v3"), "ci");
+    kv.store.set(expectedKey("toolsnap-mcp", "d3"), "ci");
     const { alerts } = await pass({
       kv,
       deployments: { "toolsnap-mcp": [dep("d3", "v3"), dep("d2", "v2"), dep("d1", "v1")] },
@@ -215,12 +237,109 @@ async function run(): Promise<void> {
   {
     const kv = new FakeKv();
     kv.store.set(seenKey("toolsnap-mcp"), "d1");
-    const deployments = { "toolsnap-mcp": [dep("d2", "v2"), dep("d1", "v1")] };
+    const deployments = { "toolsnap-mcp": [dep("d2", "v2", MID), dep("d1", "v1")] };
     await pass({ kv, deployments, telegramOk: false });
     assert("failed send: not marked as seen", kv.store.get(seenKey("toolsnap-mcp")) === "d1");
     const retry = await pass({ kv, deployments });
     assert("retry: alert goes out", retry.alerts.length === 1);
     assert("retry: marked as seen", kv.store.get(seenKey("toolsnap-mcp")) === "d2");
+  }
+
+  // ── 1 (review): a real alert body must parse under Telegram's Markdown ──
+  {
+    const kv = new FakeKv();
+    kv.store.set(seenKey("toolsnap-mcp"), "d1");
+    const { alerts } = await pass({
+      kv,
+      deployments: {
+        "toolsnap-mcp": [
+          dep("d2", "v2", OLD, {
+            author_email: "some_one*x[1]@example.com",
+            source: "wrangler",
+            annotations: { "workers/triggered_by": "secret_put", "workers/message": "a_b *c* [d]" },
+          }),
+          dep("d1", "v1"),
+        ],
+      },
+    });
+    assert("alert with _ * [ in third-party fields still gets through the Telegram parser", alerts.length === 1, String(alerts.length));
+    assert("…and marks the deployment as seen", kv.store.get(seenKey("toolsnap-mcp")) === "d2");
+  }
+  assert("the fake Telegram rejects a stray underscore", !parsesAsLegacyMarkdown("triggered_by: `x`"));
+  assert("the fake Telegram accepts underscores inside code spans", parsesAsLegacyMarkdown("*a* `x_y`"));
+
+  // ── 2 (review): rollback to an already-registered version still alerts ──
+  {
+    const kv = new FakeKv();
+    kv.store.set(seenKey("toolsnap-mcp"), "d2");
+    // v1 was deployed by the workflow long ago (deployment d1 registered)...
+    kv.store.set(expectedKey("toolsnap-mcp", "d1"), "ci");
+    // ...and now someone rolls back to it: NEW deployment d3, same version v1.
+    const { alerts } = await pass({
+      kv,
+      deployments: {
+        "toolsnap-mcp": [
+          dep("d3", "v1", OLD, { annotations: { "workers/triggered_by": "rollback" } }),
+          dep("d2", "v2"),
+          dep("d1", "v1"),
+        ],
+      },
+    });
+    assert("rollback to a registered version alerts", alerts.length === 1 && alerts[0]!.includes("Rollback"), alerts.join("|"));
+    assert("rollback alert names the new deployment", alerts[0]?.includes("d3") === true);
+    assert("rollback: seen updated", kv.store.get(seenKey("toolsnap-mcp")) === "d3");
+  }
+  {
+    const kv = new FakeKv();
+    kv.store.set(seenKey("toolsnap-mcp"), "d1");
+    kv.store.set(expectedKey("toolsnap-mcp", "d3"), "registered-by-hand");
+    const { alerts } = await pass({
+      kv,
+      deployments: {
+        "toolsnap-mcp": [
+          dep("d3", "v1", FRESH, { annotations: { "workers/triggered_by": "rollback" } }),
+          dep("d1", "v1"),
+        ],
+      },
+    });
+    assert("rollback alerts even when the deployment itself is registered and fresh", alerts.length === 1);
+  }
+  assert(
+    "a deployment on an old registered VERSION but unregistered deployment id → unexpected",
+    judgeDeployment(dep("d9", "v1"), "d1", false, NOW) === "unexpected"
+  );
+
+  // ── 5 (review): more than 5 unexpected deployments → last alert says "y N más" ──
+  {
+    const kv = new FakeKv();
+    kv.store.set(seenKey("toolsnap-mcp"), "d0");
+    const many = [8, 7, 6, 5, 4, 3, 2, 1].map((n) => dep(`d${n}`, `v${n}`));
+    many.push(dep("d0", "v0"));
+    const { alerts } = await pass({ kv, deployments: { "toolsnap-mcp": many } });
+    assert("8 unexpected deployments → 5 alerts", alerts.length === 5, String(alerts.length));
+    assert("last alert says 'y 3 más'", alerts[4]?.includes("y 3 más") === true && !alerts[3]!.includes("más"));
+    assert("seen jumps to the latest", kv.store.get(seenKey("toolsnap-mcp")) === "d8");
+  }
+
+  // ── 1 (review): undeliverable alert is warned about, then throws after 1 h ──
+  {
+    const kv = new FakeKv();
+    kv.store.set(seenKey("toolsnap-mcp"), "d1");
+    logged.length = 0;
+    await pass({ kv, telegramOk: false, deployments: { "toolsnap-mcp": [dep("d2", "v2", MID), dep("d1", "v1")] } });
+    assert("failed send under 1 h: console.warn, no throw", logged.some((l) => l.includes("no se pudo enviar")));
+    let threw = "";
+    try {
+      await pass({
+        kv,
+        telegramOk: false,
+        deployments: { "toolsnap-mcp": [dep("d2", "v2", "2026-10-30T09:00:00.000Z"), dep("d1", "v1")] },
+      });
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert("failed send for over 1 h: throws so runTask pages it", threw.includes("sin poder enviarse"), threw);
+    assert("…and it is still not marked as seen", kv.store.get(seenKey("toolsnap-mcp")) === "d1");
   }
 
   // ── several Workers, one API failure does not hide the other ──
@@ -260,6 +379,7 @@ async function run(): Promise<void> {
 
 run().catch((err) => {
   globalThis.fetch = realFetch;
+  console.error = realError;
   console.error("Test runner error:", err);
   process.exit(1);
 });

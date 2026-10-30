@@ -245,9 +245,9 @@ Production deploys come from `.github/workflows/deploy.yml` (push to `main`).
 
 ### Alerta de despliegues inesperados
 
-Vigila que nadie publique `toolsnap-mcp` ni `toolsnap-portal` fuera del workflow (acción A14 del plan de seguridad). Corre en el cron de 5 minutos que ya existe ([`src/alerts/deploy-watch.ts`](src/alerts/deploy-watch.ts)): lee los últimos deployments de cada Worker por la API de Cloudflare con un token de solo lectura y, si hay uno nuevo cuya versión no está registrada como esperada, avisa por Telegram (el canal de las demás alertas) con Worker, versión, fecha, `author_email`, `source` y mensaje. La primera pasada sin estado solo guarda el último deployment.
+Vigila que nadie publique `toolsnap-mcp` ni `toolsnap-portal` fuera del workflow (acción A14 del plan de seguridad). Corre en el cron de 5 minutos que ya existe ([`src/alerts/deploy-watch.ts`](src/alerts/deploy-watch.ts)): lee los últimos deployments de cada Worker por la API de Cloudflare con un token de solo lectura y, si hay uno nuevo que no está registrado como esperado, avisa por Telegram (el canal de las demás alertas) con Worker, deployment, versión, fecha, `author_email`, origen y mensaje. La primera pasada sin estado solo guarda el último deployment. Un **rollback** avisa siempre, esté o no registrado.
 
-Las versiones esperadas viven en el KV `X402_NONCES`, claves `esperado:{worker}:{versionId}` (caducan a los 90 días); el último visto, en `ultimo-visto:{worker}`. El workflow registra la versión tras `wrangler deploy`. Cualquier otra cosa avisa, también un `wrangler secret put` (crea una versión nueva): si lo has hecho tú, regístrala.
+Lo esperado vive en el KV `X402_NONCES`: `esperado:{worker}:dep:{deploymentId}` (caduca a los 90 días) y `ultimo-visto:{worker}`. Se registra el *deployment* y no la versión a propósito: un `wrangler rollback` crea un deployment nuevo con una versión ya conocida. El workflow registra el suyo tras `wrangler deploy`. Cualquier otra cosa avisa, también un `wrangler secret put` (crea una versión nueva): si lo has hecho tú, regístralo. Si el aviso no consigue salir por Telegram se reintenta cada pasada y, pasada 1 hora, el cron falla y lo ve `/analytics` (tarea `deploy-watch`).
 
 **Deploy manual desde el Mac** (o tras un `wrangler secret put`):
 
@@ -255,16 +255,19 @@ Las versiones esperadas viven en el KV `X402_NONCES`, claves `esperado:{worker}:
 CLOUDFLARE_API_TOKEN=... scripts/registrar-deploy.sh toolsnap-mcp
 ```
 
-Hazlo en los tres minutos siguientes al deploy: es el margen de cortesía antes de que la alerta salga. El token necesita Workers Scripts Read y Workers KV Storage Edit en la cuenta ToolSnap. `toolsnap-portal` se despliega desde otro repositorio: su workflow tiene que llamar a este mismo script con `toolsnap-portal`.
+Hazlo en los tres minutos siguientes al deploy: es el margen de cortesía antes de que la alerta salga. `toolsnap-portal` se despliega desde otro repositorio: su workflow tiene que llamar a este mismo script con `toolsnap-portal`.
 
 **Qué hay que poner (una sola vez):**
 
 ```bash
-npx wrangler secret put VIGIA_CF_TOKEN      # token de solo lectura: Workers Scripts Read, cuenta ToolSnap
+npx wrangler secret put VIGIA_CF_TOKEN
 # TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID ya existen (alertas de error); no hay que tocarlos.
 ```
 
-Además, el token `CLOUDFLARE_API_TOKEN` del environment `production` de GitHub necesita el permiso **Workers KV Storage: Edit** (cuenta ToolSnap) para que el paso «Register deployed version as expected» funcione; sin él, cada deploy del workflow dará una alerta. Pon el secret y el permiso **antes** de fusionar esta PR.
+- `VIGIA_CF_TOKEN`: token de solo lectura en la cuenta ToolSnap con el permiso **Workers Metadata Read-Only** (la documentación de la API lo acepta para `GET .../deployments`; no es el de «Workers Scripts Read», que además permite descargar el código de todos los Workers). Sin el secret, la vigilancia no hace nada.
+- El token `CLOUDFLARE_API_TOKEN` del environment `production` de GitHub necesita además **Workers KV Storage: Edit** (cuenta ToolSnap) para el paso «Register deployment as expected» (y para `scripts/registrar-deploy.sh`); sin él, cada deploy dará una alerta. Pon el secret y el permiso **antes** de fusionar.
+
+**Límite estructural.** El vigilante corre dentro de `toolsnap-mcp`, que es uno de los vigilados, y el repositorio es público: quien pueda desplegar `toolsnap-mcp` puede quitar la llamada, escribir `ultimo-visto` y `esperado:*` en el KV y leer `VIGIA_CF_TOKEN`. Cubre un deploy descuidado del socio y cualquier deploy de `toolsnap-portal`; no cubre a un adversario con permiso de deploy sobre `toolsnap-mcp`. Para eso haría falta vigilar desde fuera (un `schedule` de GitHub Actions o un Worker aparte con su propio KV y token).
 
 ---
 

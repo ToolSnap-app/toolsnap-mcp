@@ -242,7 +242,7 @@
   //                                               them GET /admin/auth returns a clear 500,
   //                                               never a silent client_id=undefined — see
   //                                               src/cms-auth.ts for the 2026-07-14 incident)
-  //   wrangler secret put VIGIA_CF_TOKEN         (A14 — token de SOLO LECTURA, Workers Scripts Read en la
+  //   wrangler secret put VIGIA_CF_TOKEN         (A14 — token de SOLO LECTURA, Workers Metadata Read-Only en la
   //                                               cuenta ToolSnap; sin el, la alerta de deploys no hace nada)
   //   -- Fase 22.1 — ToolSnap X Agent (see vault nota 06 Fase 22 + nota 10 for setup steps) --
   //   wrangler secret put X_API_KEY                       (X app consumer key, developer.x.com)

@@ -8,11 +8,14 @@ import { sendTelegram } from "./telegram.js";
  *
  * Mecanismo:
  *  - El workflow de deploy (y scripts/registrar-deploy.sh a mano) escribe en KV
- *    `esperado:{worker}:{versionId}` justo despues de `wrangler deploy`.
+ *    `esperado:{worker}:dep:{deploymentId}` justo despues de `wrangler deploy`.
+ *    Se registra el DEPLOYMENT, no la version: un `wrangler rollback` crea un
+ *    deployment nuevo con una version ya conocida, y eso es justo un
+ *    despliegue fuera del workflow.
  *  - Este cron lee los ultimos deployments de cada Worker vigilado con un token
  *    de SOLO LECTURA (VIGIA_CF_TOKEN) y avisa por Telegram (el mismo canal que
- *    ya usan las alertas de error) de cualquier deployment nuevo cuyas
- *    versiones no esten registradas como esperadas.
+ *    ya usan las alertas de error) de cualquier deployment nuevo no
+ *    registrado como esperado y de todo rollback.
  *
  * KV: se reutiliza X402_NONCES (el unico binding). Presupuesto: lecturas
  * ~4 por pasada (despreciable frente a 100.000/dia) y puts SOLO cuando cambia
@@ -27,6 +30,8 @@ const API = "https://api.cloudflare.com/client/v4";
 /** Un deploy recien hecho puede ver este cron antes de que el workflow termine de registrarlo. */
 const GRACE_MS = 3 * 60 * 1000;
 const MAX_ALERTS_PER_WORKER = 5;
+/** Un aviso que lleva tanto sin poder enviarse deja de reintentarse en silencio: se lanza para que runTask lo pagine. */
+const UNDELIVERABLE_MS = 60 * 60 * 1000;
 
 export interface DeploymentVersion {
   version_id: string;
@@ -45,7 +50,7 @@ export interface Deployment {
 export type Verdict = "baseline" | "unchanged" | "expected" | "unexpected" | "pending";
 
 export const seenKey = (worker: string): string => `ultimo-visto:${worker}`;
-export const expectedKey = (worker: string, versionId: string): string => `esperado:${worker}:${versionId}`;
+export const expectedKey = (worker: string, deploymentId: string): string => `esperado:${worker}:dep:${deploymentId}`;
 
 /**
  * Decide que hacer con un deployment dado el ultimo visto. Pura: la parte con
@@ -53,20 +58,22 @@ export const expectedKey = (worker: string, versionId: string): string => `esper
  * probarla sin red.
  *  - baseline:   no hay estado previo, solo se guarda.
  *  - unchanged:  es el mismo deployment ya visto.
- *  - expected:   nuevo, y todas sus versiones estan registradas.
+ *  - expected:   nuevo y registrado como esperado.
  *  - pending:    nuevo, sin registrar, pero tan reciente que el workflow puede
  *                estar todavia registrandolo: se reevalua en la siguiente pasada.
- *  - unexpected: nuevo y sin registrar: alerta.
+ *  - unexpected: nuevo y sin registrar, o un rollback (siempre avisa, este o no
+ *                registrado, y sin margen de cortesia): alerta.
  */
 export function judgeDeployment(
   deployment: Deployment,
   lastSeenId: string | null,
-  allVersionsRegistered: boolean,
+  registered: boolean,
   now: number
 ): Verdict {
   if (lastSeenId === null) return "baseline";
   if (deployment.id === lastSeenId) return "unchanged";
-  if (allVersionsRegistered) return "expected";
+  if (deployment.annotations?.["workers/triggered_by"] === "rollback") return "unexpected";
+  if (registered) return "expected";
   const created = Date.parse(deployment.created_on);
   if (Number.isFinite(created) && now - created < GRACE_MS) return "pending";
   return "unexpected";
@@ -93,23 +100,34 @@ async function fetchDeployments(accountId: string, worker: string, token: string
   return body.result?.deployments ?? [];
 }
 
-/** Texto libre de terceros dentro de un bloque de codigo de Markdown de Telegram. */
+/**
+ * Texto libre de terceros dentro de un bloque de codigo del Markdown LEGADO de
+ * Telegram (el que usa sendTelegram). Fuera de los backticks no puede haber un
+ * `_`, `*` o `[` suelto: Telegram contesta 400 "can't parse entities" y la
+ * alerta no sale (revision de la PR #144). Por eso las etiquetas van sin `_`.
+ */
 const code = (s: string | undefined): string => `\`${(s ?? "-").replace(/`/g, "'").slice(0, 200)}\``;
 
-export function formatAlert(worker: string, d: Deployment): string {
+export function formatAlert(worker: string, d: Deployment, more = 0): string {
   const a = d.annotations ?? {};
+  const rollback = a["workers/triggered_by"] === "rollback";
   const ids = (d.versions ?? []).map((v) => v.version_id).join(", ");
   const lines = [
-    `🔴 *Despliegue inesperado* · ${code(worker)}`,
-    `version: ${code(ids || d.id)}`,
+    `🔴 *${rollback ? "Rollback" : "Despliegue inesperado"}* · ${code(worker)}`,
+    `deployment: ${code(d.id)}`,
+    `version: ${code(ids || "-")}`,
     `fecha: ${code(d.created_on)}`,
     `autor: ${code(d.author_email)}`,
-    `source: ${code(d.source)}`,
-    `triggered_by: ${code(a["workers/triggered_by"])}`,
+    `origen: ${code(d.source)}`,
+    `disparado por: ${code(a["workers/triggered_by"])}`,
   ];
   if (a["workers/message"]) lines.push(`mensaje: ${code(a["workers/message"])}`);
-  if (a["workers/tag"]) lines.push(`tag: ${code(a["workers/tag"])}`);
-  lines.push("No lo registro el workflow ni scripts/registrar-deploy.sh.");
+  lines.push(
+    rollback
+      ? "Un rollback siempre avisa, lo haya hecho el workflow o no."
+      : "No lo registro el workflow ni scripts/registrar-deploy.sh."
+  );
+  if (more > 0) lines.push(`y ${more} más`);
   return lines.join("\n");
 }
 
@@ -143,34 +161,47 @@ export async function checkDeployWatch(env: Env, now = Date.now()): Promise<void
         continue;
       }
 
-      let newSeen = lastSeen;
-      let blocked = false;
-      let alerts = 0;
-      for (const d of newerThan(deployments, lastSeen)) {
-        const versionIds = (d.versions ?? []).map((v) => v.version_id);
-        const registered =
-          versionIds.length > 0 &&
-          (await Promise.all(versionIds.map((v) => kv.get(expectedKey(worker, v))))).every((v) => v !== null);
+      // Pasada 1: veredicto de cada deployment nuevo, del mas antiguo al mas
+      // reciente. Uno pendiente (muy reciente y sin registrar) corta: se
+      // reevalua en la siguiente pasada, y los posteriores con el.
+      const fresh = newerThan(deployments, lastSeen);
+      const judged: Array<{ d: Deployment; verdict: Verdict }> = [];
+      for (const d of fresh) {
+        const registered = (await kv.get(expectedKey(worker, d.id))) !== null;
         const verdict = judgeDeployment(d, lastSeen, registered, now);
-        if (verdict === "pending") {
-          // No se avanza mas alla de un deployment pendiente: se reevalua.
-          blocked = true;
-          break;
-        }
-        if (verdict === "unexpected") {
-          alerts++;
-          if (alerts <= MAX_ALERTS_PER_WORKER) {
-            const sent = await sendTelegram(env, formatAlert(worker, d));
-            // Si el aviso no sale, no se da por visto: se reintenta en la siguiente pasada.
-            if (!sent) {
-              blocked = true;
-              break;
+        if (verdict === "pending") break;
+        judged.push({ d, verdict });
+      }
+
+      // Pasada 2: avisar de los inesperados (maximo MAX_ALERTS_PER_WORKER; el
+      // ultimo aviso lleva "y N más") y avanzar `ultimo-visto`.
+      const unexpected = judged.filter((j) => j.verdict === "unexpected");
+      const extra = Math.max(0, unexpected.length - MAX_ALERTS_PER_WORKER);
+      let newSeen = lastSeen;
+      let sentCount = 0;
+      let stopped = false;
+      for (const { d, verdict } of judged) {
+        if (verdict === "unexpected" && sentCount < MAX_ALERTS_PER_WORKER) {
+          sentCount++;
+          const last = sentCount === MAX_ALERTS_PER_WORKER;
+          const sent = await sendTelegram(env, formatAlert(worker, d, last ? extra : 0));
+          if (!sent) {
+            // No se da por visto: se reintenta en la siguiente pasada, pero no
+            // en silencio (revision de la PR #144: un envio que falla para
+            // siempre no puede quedarse sin rastro).
+            console.warn(`deploy-watch: no se pudo enviar el aviso de ${worker} (deployment ${d.id})`);
+            const age = now - Date.parse(d.created_on);
+            if (Number.isFinite(age) && age > UNDELIVERABLE_MS) {
+              throw new Error(`aviso de ${worker} sin poder enviarse desde hace mas de 1 h (deployment ${d.id})`);
             }
+            stopped = true;
+            break;
           }
         }
         newSeen = d.id;
       }
-      if (!blocked) newSeen = latest.id;
+      // Sin pendientes ni envios fallidos, `ultimo-visto` salta al mas reciente.
+      if (!stopped && judged.length === fresh.length) newSeen = latest.id;
       if (newSeen !== lastSeen) await kv.put(seenKey(worker), newSeen);
     } catch (err) {
       failures.push(`${worker}: ${err instanceof Error ? err.message : String(err)}`);

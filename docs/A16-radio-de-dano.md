@@ -177,12 +177,28 @@ Token propio: token de cuenta ToolSnap, Editor solo sobre el Worker
 `workers.dev`), caducidad 6 meses, como `CLOUDFLARE_API_TOKEN_X_PERSONAL` en
 el environment `production`. Cada job lee solo su token.
 
-Convive con el paso de registro de A14 (rama `claude/a14-alerta-deploys-*`,
-dentro del job `deploy`): las dos ramas se fusionan sin conflicto. La
-vigilancia de A14 mira `VIGIA_WORKERS` (`toolsnap-mcp,toolsnap-portal` por
-defecto); si se quiere vigilar también `toolsnap-x-personal`, hay que
-añadirlo ahí y registrar su deploy, y el token de este job (Editor de un solo
-Worker) no tiene `Workers KV Storage Edit`.
+Convive con el paso de registro de A14, que ahora también está en este job: la
+vigilancia mira `toolsnap-x-personal` (está en `VIGIA_WORKERS`) y el job
+registra su deployment con `scripts/registrar-deploy.sh toolsnap-x-personal`
+(`continue-on-error`). Para que el registro funcione, el token de este job
+(Editor de un solo Worker) necesita además `Workers KV Storage: Edit`; hasta
+que lo tenga, ese paso falla sin cortar el deploy y cada deploy del Worker
+avisa por Telegram.
+
+**Tope diario (2026-10-30, decisión de Unai).** `publish` y `repost` suman
+a un contador por día UTC antes de llamar a X y se niegan a partir de 15
+(`uploadMedia` no cuenta). Vive en un Durable Object con SQLite
+(`PublicationLimiter`, `workers/x-personal/src/limiter.ts`, una sola instancia
+de nombre fijo `global`, migración `v1` en `wrangler.jsonc`): el Worker no
+tiene otro almacenamiento, el DO se despliega con el mismo token (Editor del
+Worker) y es atómico sin más; KV habría pedido otro permiso en el token, no es
+atómico (leer y escribir son dos operaciones) y su cuota de puts diarios ya es
+un cuello de botella. Si X rechaza la publicación (status >= 400) la reserva se
+devuelve; un fallo de red no se devuelve porque pudo publicarse. Al pasar el
+tope devuelve `limite-diario` (429, `retryable: false`) y `src/x-agent/client.ts`
+lo convierte en un `XApiError` no reintentable: la cola marca esa fila como
+fallida en vez de gastar sus intentos (hay que reprogramarla). Sin el binding
+falla cerrado.
 
 ## 6. Orden de puesta en marcha
 
@@ -228,11 +244,8 @@ puede fusionar** hasta los pasos 1 a 3 (fusionar despliega `toolsnap-mcp`).
   variable, se vigila la wallet equivocada en silencio. Un `console.warn` en
   `settlePayment` cuando `account.address` (que ya calcula) difiera de
   `RELAYER_ADDRESS` evitaría la deriva sin exponer nada.
-- **M8. Superficie RPC fijada en el test.** Añadir a
-  `test/x-personal-boundary.ts` un `assert` sobre
-  `Object.getOwnPropertyNames(XPersonal.prototype)` (solo `constructor`,
-  `publish`, `uploadMedia`, `repost`) para que un verbo nuevo no entre sin
-  revisión.
+- **M8. Superficie RPC fijada en el test.** Hecho con el tope diario: el test
+  fija `Object.getOwnPropertyNames(XPersonal.prototype)`.
 - **M9. Token A3 y el binding.** Comprobar en el primer deploy (paso 4) que el
   token del deploy principal, Editor solo sobre `toolsnap-mcp`, puede declarar
   el binding a otro Worker. No debería necesitar más, pero si el deploy falla

@@ -10,11 +10,18 @@
  *     config, validates what it is asked to do, and signs with the personal
  *     token.
  *
+ *  4. The daily cap of 15 publications (publish + repost; uploadMedia does not
+ *     count) lives in a Durable Object with SQLite: the 16th is refused with
+ *     the typed error `limite-diario`, which toolsnap-mcp turns into a
+ *     non-retryable XApiError; it opens again the next UTC day; the DO has no
+ *     fetch and the RPC surface is pinned.
+ *
  * Only the network is mocked (global fetch). Run: npx tsx test/x-personal-boundary.ts
  */
 import "./_support/cloudflare-workers.js";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   publishTweet,
   repostTweet,
@@ -23,8 +30,12 @@ import {
   type XAgentEnv,
   type XPersonalService,
 } from "../src/x-agent/client.js";
+import type { LimiterNamespace } from "../workers/x-personal/src/ops.js";
 
-const { XPersonal, default: xPersonalWorker, ...otherExports } = await import("../workers/x-personal/src/index.js");
+const { XPersonal, PublicationLimiter, default: xPersonalWorker, ...otherExports } = await import(
+  "../workers/x-personal/src/index.js"
+);
+const { publish: opsPublish, repost: opsRepost, TOPE_DIARIO } = await import("../workers/x-personal/src/ops.js");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -114,7 +125,15 @@ assert(xpCfg.name === "toolsnap-x-personal", "x-personal wrangler name is toolsn
 assert(xpCfg.workers_dev === false, "x-personal has no workers.dev URL");
 assert(xpCfg.preview_urls === false, "x-personal has no preview URLs");
 assert(!("routes" in xpCfg) && !("route" in xpCfg), "x-personal has no routes");
-assert(!("services" in xpCfg), "x-personal binds to nothing else");
+assert(!("services" in xpCfg), "x-personal binds to no other Worker");
+const doBindings = ((xpCfg.durable_objects as { bindings?: Array<Record<string, string>> } | undefined)?.bindings ?? []);
+assert(
+  doBindings.length === 1 && doBindings[0].name === "LIMITE_PUBLICACIONES" && doBindings[0].class_name === "PublicationLimiter" && !("script_name" in doBindings[0]),
+  "x-personal's only binding is its own PublicationLimiter Durable Object"
+);
+const migrations = (xpCfg.migrations ?? []) as Array<{ tag?: string; new_sqlite_classes?: string[] }>;
+assert(migrations.length === 1 && migrations[0].new_sqlite_classes?.join() === "PublicationLimiter", "the DO is created with a SQLite migration");
+assert(!("kv_namespaces" in xpCfg) && !("d1_databases" in xpCfg) && !("r2_buckets" in xpCfg), "x-personal has no other storage");
 
 // ---------------------------------------------------------------------------
 // 2. toolsnap-mcp's client: personal goes through the binding or nowhere.
@@ -200,7 +219,7 @@ assert(dry.tweetId.startsWith("dryrun_") && calls.length === 0, "X_DRY_RUN still
 // ---------------------------------------------------------------------------
 console.log("\n3. toolsnap-x-personal Worker");
 
-assert(Object.keys(otherExports).length === 0, "the module exports only XPersonal and the default handler");
+assert(Object.keys(otherExports).length === 0, "the module exports only XPersonal, PublicationLimiter and the default handler");
 
 for (const req of [
   new Request("https://toolsnap-x-personal.example/"),
@@ -224,7 +243,47 @@ const personalEnv = {
   X_USER_ID_PERSONAL: "222",
 };
 const ctx = {} as ExecutionContext;
-const xp = new XPersonal(ctx, personalEnv);
+
+// ---- the daily-cap Durable Object, on a real SQLite (node:sqlite) --------
+// Same SQL the runtime runs; the namespace stub mimics idFromName/get.
+function newLimiterNamespace(): { ns: LimiterNamespace; ids: string[] } {
+  const db = new DatabaseSync(":memory:");
+  const doCtx = {
+    storage: {
+      sql: {
+        exec: (q: string, ...b: Array<string | number>) => {
+          const rows = db.prepare(q).all(...b);
+          return { toArray: () => rows as Array<Record<string, unknown>> };
+        },
+      },
+      transactionSync: <T>(fn: () => T): T => {
+        db.exec("BEGIN");
+        try {
+          const out = fn();
+          db.exec("COMMIT");
+          return out;
+        } catch (e) {
+          db.exec("ROLLBACK");
+          throw e;
+        }
+      },
+    },
+  };
+  const instance = new PublicationLimiter(doCtx as never, {});
+  const ids: string[] = [];
+  return {
+    ids,
+    ns: {
+      idFromName: (name: string) => {
+        ids.push(name);
+        return name;
+      },
+      get: () => instance,
+    },
+  };
+}
+const limiter = newLimiterNamespace();
+const xp = new XPersonal(ctx, { ...personalEnv, LIMITE_PUBLICACIONES: limiter.ns });
 
 nextStatus = 200;
 calls = [];
@@ -265,6 +324,104 @@ const unconfigured = new XPersonal(ctx, {});
 r = await unconfigured.publish({ text: "hola" });
 const r2 = await unconfigured.repost("1849999999999999999");
 assert(!r.ok && !r2.ok && /not configured/.test(r.ok ? "" : r.message) && calls.length === 0, "without its secrets it refuses and calls nothing");
+
+// ---------------------------------------------------------------------------
+// 4. Daily cap: 15 publications per UTC day, counted in the Durable Object.
+// ---------------------------------------------------------------------------
+console.log("\n4. daily cap (PublicationLimiter)");
+
+assert(TOPE_DIARIO === 15, "the cap is 15 publications a day");
+{
+  const lim = newLimiterNamespace();
+  const env = { ...personalEnv, LIMITE_PUBLICACIONES: lim.ns };
+  let clock = Date.parse("2026-11-03T10:00:00Z");
+  const now = () => clock;
+  const results = [];
+  calls = [];
+  for (let i = 0; i < 15; i++) results.push(await opsPublish(env, { text: `post ${i}` }, now));
+  assert(results.every((x) => x.ok), "15 publications in a day all go through");
+  assert(calls.length === 15, "...each one reaching X");
+
+  calls = [];
+  const sixteenth = await opsPublish(env, { text: "post 16" }, now);
+  assert(!sixteenth.ok && sixteenth.code === "limite-diario" && sixteenth.status === 429 && !sixteenth.retryable, "the 16th fails with the typed error limite-diario, not retryable");
+  assert(calls.length === 0, "...without calling X");
+  const refused = await opsRepost(env, "1849999999999999999", now);
+  assert(!refused.ok && refused.code === "limite-diario" && calls.length === 0, "a repost counts against the same cap");
+  const mediaAtCap = await xpUploadAt(env);
+  assert(mediaAtCap.ok, "uploadMedia is not counted and still works at the cap");
+
+  clock = Date.parse("2026-11-03T23:59:59Z");
+  assert(!(await opsPublish(env, { text: "late" }, now)).ok, "still capped at 23:59:59 UTC");
+  clock = Date.parse("2026-11-04T00:00:00Z");
+  const nextDay = await opsPublish(env, { text: "new day" }, now);
+  assert(nextDay.ok, "the next UTC day publishes again");
+  assert(lim.ids.every((id) => id === "global"), "every call hits the single fixed-name instance");
+
+  // A post X refuses (4xx/5xx) is given back; one that never got an answer is not.
+  const lim2 = newLimiterNamespace();
+  const env2 = { ...personalEnv, LIMITE_PUBLICACIONES: lim2.ns };
+  nextStatus = 403;
+  for (let i = 0; i < 20; i++) await opsPublish(env2, { text: "dup" }, now);
+  nextStatus = 200;
+  let okCount = 0;
+  for (let i = 0; i < 16; i++) if ((await opsPublish(env2, { text: `ok ${i}` }, now)).ok) okCount++;
+  assert(okCount === 15, "X refusals do not eat the cap (20 refused, then 15 of 16 go through)");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("network down");
+  }) as typeof fetch;
+  const lim3 = newLimiterNamespace();
+  const env3 = { ...personalEnv, LIMITE_PUBLICACIONES: lim3.ns };
+  for (let i = 0; i < 15; i++) await opsPublish(env3, { text: "net" }, now);
+  globalThis.fetch = realFetch;
+  const afterNet = await opsPublish(env3, { text: "after" }, now);
+  assert(!afterNet.ok && afterNet.code === "limite-diario", "network failures (outcome unknown) stay counted");
+
+  // Fails closed without the binding; nothing is published.
+  calls = [];
+  const noDo = await opsPublish(personalEnv, { text: "x" }, now);
+  assert(!noDo.ok && /daily cap/.test(noDo.ok ? "" : noDo.message) && noDo.retryable && calls.length === 0, "without the DO binding it refuses, retryable, and calls nothing");
+
+  // Atomic under concurrency: 40 parallel publishes, exactly 15 pass.
+  const lim4 = newLimiterNamespace();
+  const env4 = { ...personalEnv, LIMITE_PUBLICACIONES: lim4.ns };
+  const burst = await Promise.all(Array.from({ length: 40 }, (_, i) => opsPublish(env4, { text: `p${i}` }, now)));
+  assert(burst.filter((x) => x.ok).length === 15, "40 parallel publishes: exactly 15 pass");
+}
+
+async function xpUploadAt(env: typeof personalEnv) {
+  const { uploadMedia: upload } = await import("../workers/x-personal/src/ops.js");
+  return upload(env, new Uint8Array([1, 2, 3]), "image/png");
+}
+
+// toolsnap-mcp: the typed refusal is a non-retryable XApiError even if the
+// Worker had said retryable.
+stubAnswer = { ok: false, message: "x-personal: limite-diario: 15", status: 429, retryable: true, code: "limite-diario" } as never;
+err = await rejects(publishTweet(boundEnv, { account: "personal", text: "hola" }));
+assert(err instanceof XApiError && err.retryable === false && err.status === 429, "toolsnap-mcp turns limite-diario into a non-retryable XApiError");
+stubAnswer = { ok: false, message: "X API error (429)", status: 429, retryable: true };
+err = await rejects(publishTweet(boundEnv, { account: "personal", text: "hola" }));
+assert(err instanceof XApiError && err.retryable === true, "a plain X 429 stays retryable");
+
+// The DO exposes nothing by HTTP and the RPC surface is pinned.
+const protoNames = (c: { prototype: object }) => Object.getOwnPropertyNames(c.prototype).sort().join();
+assert(!("fetch" in PublicationLimiter.prototype) && !("alarm" in PublicationLimiter.prototype) && !("webSocketMessage" in PublicationLimiter.prototype), "PublicationLimiter has no fetch, alarm or websocket handlers");
+assert(protoNames(PublicationLimiter) === "constructor,liberar,reservar", "PublicationLimiter exposes only reservar and liberar (to this Worker alone)");
+assert(protoNames(XPersonal) === "constructor,publish,repost,uploadMedia", "XPersonal RPC surface is exactly publish, uploadMedia, repost");
+{
+  const lim5 = newLimiterNamespace();
+  const stub5 = lim5.ns.get(null) as unknown as { reservar(d: string, t: number): unknown };
+  let bad = 0;
+  for (const [d, t] of [["hoy", 15], ["2026-11-03", 0], ["2026-11-03", 1e9]] as const) {
+    try {
+      stub5.reservar(d, t);
+    } catch {
+      bad++;
+    }
+  }
+  assert(bad === 3, "the DO rejects a malformed day or an out-of-range cap");
+}
 
 console.log(failures === 0 ? "\nAll x-personal boundary checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

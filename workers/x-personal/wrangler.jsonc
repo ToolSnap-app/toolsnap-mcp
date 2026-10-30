@@ -13,7 +13,14 @@
   // only way in is the XPersonal RPC entrypoint through a service binding.
   "workers_dev": false,
   "preview_urls": false,
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Tope diario de publicaciones (15 al dia UTC, src/limiter.ts): un Durable
+  // Object con SQLite y una sola instancia, porque este Worker no tiene otro
+  // almacenamiento. Solo lo ve este Worker (nadie mas declara este binding).
+  "durable_objects": {
+    "bindings": [{ "name": "LIMITE_PUBLICACIONES", "class_name": "PublicationLimiter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PublicationLimiter"] }]
   // Secrets (never stored here — upload via
   // `wrangler secret put <NAME> --config workers/x-personal/wrangler.jsonc`):
   //   X_API_KEY                       (X app consumer key — same app as toolsnap-mcp)

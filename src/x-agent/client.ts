@@ -26,7 +26,14 @@ export type XAccount = "product" | "personal";
  */
 export type XPersonalResult<T> =
   | { ok: true; value: T }
-  | { ok: false; message: string; status: number; retryable: boolean };
+  | { ok: false; message: string; status: number; retryable: boolean; code?: XPersonalErrorCode };
+
+/**
+ * Typed refusals toolsnap-x-personal can give besides relaying an X error.
+ * `limite-diario`: the Worker's own cap of daily publications was reached
+ * (workers/x-personal/src/limiter.ts); it clears at 00:00 UTC.
+ */
+export type XPersonalErrorCode = "limite-diario";
 
 /** The RPC surface of toolsnap-x-personal (workers/x-personal/src/index.ts). */
 export interface XPersonalService {
@@ -69,6 +76,10 @@ function personalService(env: XAgentEnv): XPersonalService {
 /** Turn a binding result back into a value or the XApiError the publisher expects. */
 function unwrap<T>(r: XPersonalResult<T>): T {
   if (r.ok) return r.value;
+  // The daily cap never clears within the queue's retry window (the next
+  // cron tick is minutes away, the cap resets at 00:00 UTC): fail the post for
+  // good instead of burning its attempts, whatever `retryable` the Worker says.
+  if (r.code === "limite-diario") throw new XApiError(r.message, r.status, false);
   throw new XApiError(r.message, r.status, r.retryable);
 }
 

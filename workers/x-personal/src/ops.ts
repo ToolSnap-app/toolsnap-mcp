@@ -27,7 +27,24 @@ export interface XPersonalEnv {
   X_ACCESS_TOKEN_PERSONAL?: string;
   X_ACCESS_TOKEN_SECRET_PERSONAL?: string;
   X_USER_ID_PERSONAL?: string;
+  // Durable Object del tope diario (limiter.ts); una sola instancia, LIMITER_NAME.
+  LIMITE_PUBLICACIONES?: LimiterNamespace;
 }
+
+/** Lo que ops.ts usa del DO (DurableObjectNamespace<PublicationLimiter> lo cumple). */
+export interface LimiterStub {
+  reservar(dia: string, tope: number): Promise<{ ok: boolean; usadas: number }> | { ok: boolean; usadas: number };
+  liberar(dia: string): Promise<void> | void;
+}
+export interface LimiterNamespace {
+  idFromName(name: string): unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  get(id: any): LimiterStub;
+}
+
+/** Decision de Unai (2026-10-30): como mucho 15 publicaciones al dia UTC (publish + repost). */
+export const TOPE_DIARIO = 15;
+const LIMITER_NAME = "global";
 
 /** Same ceiling the panel enforces on upload (src/x-agent/panel-api.ts). */
 export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
@@ -58,6 +75,48 @@ const NOT_CONFIGURED: XPersonalResult<never> = {
   retryable: true,
 };
 
+const dayUtc = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+const LIMIT_REACHED: XPersonalResult<never> = {
+  ok: false,
+  message: `x-personal: limite-diario: ${TOPE_DIARIO} publicaciones al dia (UTC) alcanzado; vuelve a abrirse a las 00:00 UTC`,
+  status: 429,
+  retryable: false,
+  code: "limite-diario",
+};
+
+/**
+ * Cuenta una publicacion en el DO, de forma atomica, ANTES de llamar a X; si X
+ * la rechaza (status >= 400: no se publico nada) la devuelve. Un error de red
+ * (status 0) no se devuelve: puede haberse publicado igualmente. Sin DO
+ * enlazado o si falla, no se publica nada (falla cerrado, reintentable).
+ */
+async function withDailyCap<T>(
+  env: XPersonalEnv,
+  now: () => number,
+  fn: () => Promise<XPersonalResult<T>>
+): Promise<XPersonalResult<T>> {
+  const ns = env.LIMITE_PUBLICACIONES;
+  if (!ns) return { ok: false, message: "x-personal: daily cap not configured (LIMITE_PUBLICACIONES binding missing)", status: 0, retryable: true };
+  const dia = dayUtc(now());
+  let stub: LimiterStub;
+  try {
+    stub = ns.get(ns.idFromName(LIMITER_NAME));
+    if (!(await stub.reservar(dia, TOPE_DIARIO)).ok) return LIMIT_REACHED;
+  } catch (err) {
+    return { ok: false, message: `x-personal: daily cap unavailable: ${err instanceof Error ? err.message : String(err)}`, status: 0, retryable: true };
+  }
+  const result = await fn();
+  if (!result.ok && result.status >= 400) {
+    try {
+      await stub.liberar(dia);
+    } catch {
+      // Contar de mas es el lado seguro del tope.
+    }
+  }
+  return result;
+}
+
 async function run<T>(fn: () => Promise<T>): Promise<XPersonalResult<T>> {
   try {
     return { ok: true, value: await fn() };
@@ -70,7 +129,8 @@ async function run<T>(fn: () => Promise<T>): Promise<XPersonalResult<T>> {
 
 export async function publish(
   env: XPersonalEnv,
-  params: Omit<PublishParams, "account">
+  params: Omit<PublishParams, "account">,
+  now: () => number = Date.now
 ): Promise<XPersonalResult<PublishResult>> {
   if (!params || typeof params !== "object") return invalid("params must be an object");
   const { text, quoteTweetId, replyToTweetId, mediaIds } = params;
@@ -83,7 +143,7 @@ export async function publish(
   if (!text && !quoteTweetId && !mediaIds?.length) return invalid("nothing to publish");
   const c = creds(env);
   if (!c) return NOT_CONFIGURED;
-  return run(() => publishTweetAs(c, { text, quoteTweetId, replyToTweetId, mediaIds }));
+  return withDailyCap(env, now, () => run(() => publishTweetAs(c, { text, quoteTweetId, replyToTweetId, mediaIds })));
 }
 
 export async function uploadMedia(env: XPersonalEnv, bytes: Uint8Array, mimeType: string): Promise<XPersonalResult<string>> {
@@ -95,12 +155,16 @@ export async function uploadMedia(env: XPersonalEnv, bytes: Uint8Array, mimeType
   return run(() => uploadMediaAs(c, bytes, mimeType));
 }
 
-export async function repost(env: XPersonalEnv, targetTweetId: string): Promise<XPersonalResult<PublishResult>> {
+export async function repost(
+  env: XPersonalEnv,
+  targetTweetId: string,
+  now: () => number = Date.now
+): Promise<XPersonalResult<PublishResult>> {
   if (!TWEET_ID.test(String(targetTweetId))) return invalid("targetTweetId must be a tweet id");
   const c = creds(env);
   if (!c || !env.X_USER_ID_PERSONAL) return NOT_CONFIGURED;
   const userId = env.X_USER_ID_PERSONAL;
-  return run(() => repostTweetAs(c, userId, targetTweetId));
+  return withDailyCap(env, now, () => run(() => repostTweetAs(c, userId, targetTweetId)));
 }
 
 /**

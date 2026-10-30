@@ -9,7 +9,6 @@ import { checkSurfaceDigest } from "./alerts/surface-digest.js";
 import { checkServerHealth } from "./alerts/health.js";
 import { recordCronOk, recordCronError } from "./alerts/cron-status.js";
 import { sendTelegram } from "./alerts/telegram.js";
-import { checkRelayerBalance, RELAYER_FLOOR_USD, RELAYER_CAP_USD } from "./alerts/relayer-balance.js";
 import { looksLikeApiKey, issueKey, revokeKey, accountExists, accountAddress, verifyApiKey, touchKey } from "./fiat/keys.js";
 import { debitBalance, refundDebit, getBalanceMicro, microToUsdc, usdcToMicro } from "./x402/prepaid.js";
 import { handleCmsAuthStart, handleCmsAuthCallback } from "./cms-auth.js";
@@ -28,6 +27,7 @@ import { X_PUSH_SW_JS } from "./x-agent/push-sw.js";
 import { dispatchXAgentApi } from "./x-agent/panel-api.js";
 import { fetchXMetrics } from "./x-agent/metrics.js";
 import type { XPersonalService } from "./x-agent/client.js";
+import { checkRelayerBalanceCached, RELAYER_FLOOR_USD, RELAYER_CAP_USD } from "./alerts/relayer-balance.js";
 import { snapshotDirectoryStats } from "./analytics/directory-stats.js";
 import { rollupAnalyticsDaily } from "./analytics/daily.js";
 
@@ -963,7 +963,8 @@ const handler = {
 
     // A16 — relayer gas balance against Unai's $5 floor / $50 cap. Same
     // read-only token and headless prefix as /reports/analytics; pages the
-    // alerts chat (deduped 24h) when out of range. Not a cron on purpose:
+    // alerts chat (deduped 24h) when out of range; reads are memoized 60 s so
+    // a burst here cannot hammer the public RPC. Not a cron on purpose:
     // the relayer is also checked after each settlement it pays for.
     if (method === "GET" && url.pathname === "/reports/relayer-balance") {
       const token = /^Bearer\s+(.+)$/i.exec(request.headers.get("Authorization") ?? "")?.[1]?.trim();
@@ -971,7 +972,7 @@ const handler = {
         return jsonResponse({ error: "Invalid or missing token." }, 401);
       }
       try {
-        const r = await checkRelayerBalance(env);
+        const r = await checkRelayerBalanceCached(env);
         return jsonResponse({
           address: r.address,
           eth: r.eth,
@@ -983,6 +984,7 @@ const handler = {
           cap_usd: RELAYER_CAP_USD,
           status: r.status,
           alerted: r.alerted,
+          cached: r.cached,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

@@ -114,14 +114,19 @@ Tests: `test/x-personal-boundary.ts`.
 - `src/alerts/relayer-balance.ts` lee por el RPC público (`BASE_RPC_URL`) el
   ETH y el USDC de `RELAYER_ADDRESS` (variable pública en `wrangler.jsonc`, no
   se deriva de la clave) y el precio ETH/USD del feed de Chainlink en Base
-  (`0x7104…Bb70`, comprobado: "ETH / USD", 8 decimales). Fuera de rango avisa
-  por el bot de alertas (`TELEGRAM_BOT_TOKEN`), una vez al día por estado.
+  (`0x7104…Bb70`, comprobado: "ETH / USD", 8 decimales). Un precio con más
+  de 2 h (el heartbeat es de unos 20 min) cuenta como lectura fallida. Fuera
+  de rango avisa por el bot de alertas (`TELEGRAM_BOT_TOKEN`), una vez al día
+  por estado; la marca se pone solo si Telegram aceptó el mensaje, así que un
+  envío fallido no compra 24 h de silencio.
 - Cómo se invoca, sin cron (la otra sesión está tocando `scheduled`):
   - después de cada transacción que paga el relayer (depósito, o pago por
     llamada sin CDP), en `ctx.waitUntil`, como mucho una vez por hora y sin
     poder romper el pago;
   - `GET /reports/relayer-balance` con `Authorization: Bearer
-    <ANALYTICS_READ_TOKEN>`, que devuelve el JSON y avisa si toca.
+    <ANALYTICS_READ_TOKEN>`, que devuelve el JSON y avisa si toca. Las
+    lecturas se reutilizan 60 s para no castigar el RPC público que también
+    usa la liquidación x402.
 - Si se quiere también una lectura diaria aunque no haya pagos, basta añadir
   `ctx.waitUntil(maybeCheckRelayerBalance(env))` en la rama diaria de
   `scheduled()`; lo dejo para la sesión que lleva el cron.
@@ -159,39 +164,77 @@ El token vive solo en `toolsnap-portal` a partir de ahora.
 
 ## 5. Deploy del Worker nuevo
 
-Propuesta de job en `docs/A16-job-deploy-x-personal.yml` (no edito los
-workflows: los está tocando otra sesión). Token propio: token de cuenta
-ToolSnap, Editor solo sobre el Worker `toolsnap-x-personal`, sin permisos de
-zona, caducidad 6 meses, como `CLOUDFLARE_API_TOKEN_X_PERSONAL` en el
-environment `production`. El job va antes del deploy principal.
+Job `deploy-x-personal` en `.github/workflows/deploy.yml`, entre `build` y
+`deploy` (este pasa a `needs: [build, deploy-x-personal]`): el binding de
+`toolsnap-mcp` apunta a él, así que va primero. Instala con
+`--ignore-scripts` como el principal (A12) y despliega con
+`npx wrangler deploy --config workers/x-personal/wrangler.jsonc`. Sin smoke
+test HTTP a propósito (contesta 404 a todo): la prueba es el smoke test del
+deploy principal, que arranca `toolsnap-mcp` con el binding.
+
+Token propio: token de cuenta ToolSnap, Editor solo sobre el Worker
+`toolsnap-x-personal`, sin permisos de zona (no tiene ruta, ni dominio, ni
+`workers.dev`), caducidad 6 meses, como `CLOUDFLARE_API_TOKEN_X_PERSONAL` en
+el environment `production`. Cada job lee solo su token.
+
+Convive con el paso de registro de A14 (rama `claude/a14-alerta-deploys-*`,
+dentro del job `deploy`): las dos ramas se fusionan sin conflicto. La
+vigilancia de A14 mira `VIGIA_WORKERS` (`toolsnap-mcp,toolsnap-portal` por
+defecto); si se quiere vigilar también `toolsnap-x-personal`, hay que
+añadirlo ahí y registrar su deploy, y el token de este job (Editor de un solo
+Worker) no tiene `Workers KV Storage Edit`.
 
 ## 6. Orden de puesta en marcha
 
 El binding apunta a un Worker que todavía no existe, así que **esta PR no se
-puede fusionar** hasta los pasos 1 y 2 (fusionar despliega `toolsnap-mcp`).
+puede fusionar** hasta los pasos 1 a 3 (fusionar despliega `toolsnap-mcp`).
 
-1. Crear `toolsnap-x-personal` subiendo sus secrets (el primer `secret put`
-   crea el Worker; wrangler pregunta y se acepta). Desde la raíz del repo:
+1. Crear `toolsnap-x-personal` con un deploy real desde el Mac, **antes** de
+   subir ningún secret: `npx wrangler deploy --config
+   workers/x-personal/wrangler.jsonc` desde la raíz del repo (con esta rama).
+   Así nace con su código (404 a todo) y con `workers_dev` y `preview_urls`
+   apagados. Crearlo con `wrangler secret put` subiría un script de relleno
+   de wrangler, sin esa configuración, con los tokens ya dentro.
+2. Subir sus secrets:
    `npx wrangler secret put <NOMBRE> --config workers/x-personal/wrangler.jsonc`
    para `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN_PERSONAL`,
    `X_ACCESS_TOKEN_SECRET_PERSONAL`, `X_USER_ID_PERSONAL`. Cloudflare no deja
    leer los valores viejos: si no los tienes guardados, aprovecha para
    **rotar** el token personal (en @icosaedro_one, Ajustes → Seguridad →
    Apps conectadas → revocar la app; luego `X_API_KEY=… X_API_SECRET=… npx
-   tsx scripts/x-authorize.mts` con esa cuenta). Así la copia que queda en
-   `toolsnap-mcp` deja de valer en el acto.
-2. Crear el token de deploy del paso 5 y guardarlo en GitHub; la sesión
-   principal integra el job en `deploy.yml`.
-3. Fusionar esta PR: despliega primero `toolsnap-x-personal` y luego
+   tsx scripts/x-authorize.mts` con esa cuenta, que ya imprime los comandos
+   con el `--config` correcto). Así la copia que queda en `toolsnap-mcp` deja
+   de valer en el acto.
+3. Crear el token de deploy de §5 (el Worker ya existe, así que se puede
+   elegir en el selector) y guardarlo con
+   `gh secret set CLOUDFLARE_API_TOKEN_X_PERSONAL --env production -R ToolSnap-app/toolsnap-mcp`.
+4. Fusionar esta PR: despliega primero `toolsnap-x-personal` y luego
    `toolsnap-mcp` con el binding.
-4. Comprobar la primera publicación de @icosaedro_one (programada o una
+5. Comprobar la primera publicación de @icosaedro_one (programada o una
    respuesta aprobada) con `npx wrangler tail toolsnap-x-personal` abierto.
-5. Borrar de `toolsnap-mcp`: `npx wrangler secret delete` de
+6. Borrar de `toolsnap-mcp`: `npx wrangler secret delete` de
    `X_ACCESS_TOKEN_PERSONAL`, `X_ACCESS_TOKEN_SECRET_PERSONAL`,
    `X_USER_ID_PERSONAL` y `POLAR_ACCESS_TOKEN`.
-6. Rotación de Polar (§4) y recarga del relayer al rango 5-50 $ (§3).
+7. Rotación de Polar (§4) y recarga del relayer al rango 5-50 $ (§3).
 
-Riesgo a vigilar en el paso 3: el token del deploy principal (A3) es Editor
-solo sobre `toolsnap-mcp`. No debería necesitar permisos sobre el Worker al
-que apunta un binding, pero si el deploy falla por el binding, el error lo
-dirá y la solución es añadir lectura de `toolsnap-x-personal` a ese token.
+## 7. Seguimientos (no hechos en A16)
+
+- **M3. Dedupe y throttle por colo/isolate, no globales.** La marca de "ya
+  avisé hoy" vive en memoria y en la Cache API, las dos locales; el límite de
+  una comprobación por hora tras un pago y la memo de 60 s de la ruta son por
+  isolate. Con tráfico repartido entre colos puede llegar alguna página más
+  al día. Si molesta, una marca global (D1 o KV, con su cuota) lo cierra.
+- **M6. `RELAYER_ADDRESS` es una copia manual.** Si cambia la clave y no la
+  variable, se vigila la wallet equivocada en silencio. Un `console.warn` en
+  `settlePayment` cuando `account.address` (que ya calcula) difiera de
+  `RELAYER_ADDRESS` evitaría la deriva sin exponer nada.
+- **M8. Superficie RPC fijada en el test.** Añadir a
+  `test/x-personal-boundary.ts` un `assert` sobre
+  `Object.getOwnPropertyNames(XPersonal.prototype)` (solo `constructor`,
+  `publish`, `uploadMedia`, `repost`) para que un verbo nuevo no entre sin
+  revisión.
+- **M9. Token A3 y el binding.** Comprobar en el primer deploy (paso 4) que el
+  token del deploy principal, Editor solo sobre `toolsnap-mcp`, puede declarar
+  el binding a otro Worker. No debería necesitar más, pero si el deploy falla
+  por el binding, el error lo dirá y la solución es dar a ese token lectura
+  de `toolsnap-x-personal`.

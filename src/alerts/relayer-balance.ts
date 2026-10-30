@@ -14,7 +14,9 @@
  *
  * Entry points (deliberately not a cron, see docs/A16-radio-de-dano.md):
  *   - checkRelayerBalance(): read + page if out of range (deduped 24h);
- *     GET /reports/relayer-balance calls it.
+ *     GET /reports/relayer-balance calls it through checkRelayerBalanceCached
+ *     (60 s memo, so a burst on the route does not hammer the public RPC the
+ *     x402 settlement also uses).
  *   - maybeCheckRelayerBalance(): the same, at most once an hour per
  *     isolate and never throwing, for ctx.waitUntil after a relayer
  *     settlement (src/mcp/server.ts).
@@ -52,6 +54,8 @@ const FEED_ABI = [
   },
 ] as const;
 const FEED_DECIMALS = 8;
+/** ETH/USD on Base heartbeats every ~20 min; older than this is a failed read, not a price. */
+export const FEED_MAX_AGE_S = 2 * 60 * 60;
 
 export interface RelayerBalance {
   address: Address;
@@ -73,7 +77,7 @@ export function classifyRelayer(gasUsd: number, totalUsd: number): RelayerBalanc
   return "ok";
 }
 
-export async function readRelayerBalance(env: RelayerBalanceEnv): Promise<RelayerBalance> {
+export async function readRelayerBalance(env: RelayerBalanceEnv, now: number = Date.now()): Promise<RelayerBalance> {
   if (!env.RELAYER_ADDRESS) throw new Error("RELAYER_ADDRESS is not configured");
   const address = getAddress(env.RELAYER_ADDRESS.trim());
   const client = createPublicClient({ chain: base, transport: http(env.BASE_RPC_URL) });
@@ -84,6 +88,8 @@ export async function readRelayerBalance(env: RelayerBalanceEnv): Promise<Relaye
   ]);
   const answer = round[1];
   if (answer <= 0n) throw new Error(`Chainlink ETH/USD returned a non-positive price (${answer})`);
+  const ageS = Math.floor(now / 1000) - Number(round[3]);
+  if (ageS > FEED_MAX_AGE_S) throw new Error(`Chainlink ETH/USD price is stale (${ageS}s old, max ${FEED_MAX_AGE_S}s)`);
   const ethUsd = Number(answer) / 10 ** FEED_DECIMALS;
   const eth = formatEther(wei);
   const usd = Number(eth) * ethUsd;
@@ -93,9 +99,12 @@ export async function readRelayerBalance(env: RelayerBalanceEnv): Promise<Relaye
 }
 
 // --- alert dedupe -----------------------------------------------------------
-// One page per status per 24h. Cache API first (per colo, no KV quota: the
-// X402_NONCES KV only has 1,000 puts/day), in-memory as the fallback where no
-// Cache API exists (tests) or it fails.
+// One page per status per 24h, marked only AFTER Telegram accepted the page
+// (a failed send must not buy 24h of silence). Two marks, either one mutes:
+// in memory (always written, so the isolate dedupes even if the Cache API
+// silently keeps nothing) and the Cache API (per colo, no KV quota: the
+// X402_NONCES KV only has 1,000 puts/day). Both are per isolate/colo, not
+// global: another colo can page once more (follow-up M3 in the A16 doc).
 const ALERT_TTL_S = 24 * 60 * 60;
 const ALERT_CACHE_ORIGIN = "https://relayer-balance.toolsnap.internal/";
 const lastAlertAt = new Map<string, number>();
@@ -108,22 +117,31 @@ function alertCache(): Cache | null {
   }
 }
 
-async function firstAlertToday(status: string, now: number): Promise<boolean> {
+function alertKey(status: string): Request {
+  return new Request(`${ALERT_CACHE_ORIGIN}${status}`, { method: "GET" });
+}
+
+async function alertedRecently(status: string, now: number): Promise<boolean> {
+  const last = lastAlertAt.get(status);
+  if (last !== undefined && now - last < ALERT_TTL_S * 1000) return true;
   const cache = alertCache();
-  if (cache) {
-    try {
-      const key = new Request(`${ALERT_CACHE_ORIGIN}${status}`, { method: "GET" });
-      if (await cache.match(key)) return false;
-      await cache.put(key, new Response("1", { headers: { "Cache-Control": `public, max-age=${ALERT_TTL_S}` } }));
-      return true;
-    } catch {
-      // fall through to the in-memory throttle
-    }
+  if (!cache) return false;
+  try {
+    return (await cache.match(alertKey(status))) !== undefined;
+  } catch {
+    return false;
   }
-  const last = lastAlertAt.get(status) ?? 0;
-  if (now - last < ALERT_TTL_S * 1000) return false;
+}
+
+async function markAlerted(status: string, now: number): Promise<void> {
   lastAlertAt.set(status, now);
-  return true;
+  const cache = alertCache();
+  if (!cache) return;
+  try {
+    await cache.put(alertKey(status), new Response("1", { headers: { "Cache-Control": `public, max-age=${ALERT_TTL_S}` } }));
+  } catch {
+    // the in-memory mark above still holds for this isolate
+  }
 }
 
 export function relayerAlertText(b: RelayerBalance): string {
@@ -143,21 +161,37 @@ export async function checkRelayerBalance(
   env: RelayerBalanceEnv,
   now: number = Date.now()
 ): Promise<RelayerCheckResult> {
-  const b = await readRelayerBalance(env);
+  const b = await readRelayerBalance(env, now);
   let alerted = false;
-  if (b.status !== "ok" && (await firstAlertToday(b.status, now))) {
+  if (b.status !== "ok" && !(await alertedRecently(b.status, now))) {
     alerted = await sendTelegram(env, relayerAlertText(b));
+    if (alerted) await markAlerted(b.status, now);
   }
   return { ...b, alerted };
+}
+
+const ROUTE_MEMO_MS = 60 * 1000;
+let routeMemo: { at: number; result: RelayerCheckResult } | null = null;
+
+/** checkRelayerBalance behind a 60 s per-isolate memo (successful reads only), for the /reports route. */
+export async function checkRelayerBalanceCached(
+  env: RelayerBalanceEnv,
+  now: number = Date.now()
+): Promise<RelayerCheckResult & { cached: boolean }> {
+  if (routeMemo && now - routeMemo.at < ROUTE_MEMO_MS) return { ...routeMemo.result, cached: true };
+  const result = await checkRelayerBalance(env, now);
+  routeMemo = { at: now, result };
+  return { ...result, cached: false };
 }
 
 const OPPORTUNISTIC_INTERVAL_MS = 60 * 60 * 1000;
 let lastOpportunisticAt = 0;
 
-/** Test hook: forget both throttles. */
+/** Test hook: forget every throttle and memo. */
 export function resetRelayerBalanceThrottle(): void {
   lastOpportunisticAt = 0;
   lastAlertAt.clear();
+  routeMemo = null;
 }
 
 /**

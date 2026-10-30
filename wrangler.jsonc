@@ -113,6 +113,10 @@
     // Comma-separated EVM addresses whitelisted for free access via wallet signature.
     // Add the relay wallet's public address here (derived from RELAYER_PRIVATE_KEY).
     "WHITELISTED_ADDRESSES": "0xd5F96b537A05f196091502bCde038C572f88efba",
+    // A16 — public address of the relayer wallet (the one RELAYER_PRIVATE_KEY
+    // controls, same as above), read-only: src/alerts/relayer-balance.ts
+    // checks its ETH balance on Base against Unai's $5 floor / $50 cap.
+    "RELAYER_ADDRESS": "0xd5F96b537A05f196091502bCde038C572f88efba",
     // Fase 19.1: payer identifiers flagged as internal traffic in analytics
     // (own relay wallet used by Hermes + admin-key traffic).
     "INTERNAL_WALLETS": "0xd5F96b537A05f196091502bCde038C572f88efba,admin",
@@ -149,6 +153,12 @@
     "VIGIA_ACCOUNT_ID": "561a4c3a5324b4554556517bd1929bc1",
     "VIGIA_WORKERS": "toolsnap-mcp,toolsnap-portal"
   },
+  // A16 (2026-10-30) — the personal X account's tokens live in a separate
+  // Worker (workers/x-personal), reachable only through this binding's RPC
+  // entrypoint. Deploy toolsnap-x-personal first: this binding points at it.
+  "services": [
+    { "binding": "X_PERSONAL", "service": "toolsnap-x-personal", "entrypoint": "XPersonal" }
+  ],
   // KV namespace for x402 nonce replay-protection (created 2026-06-23).
   // Also holds prepaid spend-authorization nonces (single-use) and
   // first_free:{address} markers.
@@ -231,9 +241,8 @@
   //   wrangler secret put RELAYER_PRIVATE_KEY    (already done)
   //   wrangler secret put SCREENSHOT_API_KEY     (optional — ScreenshotOne access key;
   //                                               without it screenshot_url uses microlink)
-  //   wrangler secret put POLAR_ACCESS_TOKEN     (Fase 17 — Polar API token, sandbox or live
-  //                                               matching POLAR_ENV; checkout/welcome fail
-  //                                               clearly without it)
+  //   (POLAR_ACCESS_TOKEN: no longer used here since checkout moved to
+  //   toolsnap-portal in F21.2; removed in A16 — the portal holds it.)
   //   wrangler secret put POLAR_WEBHOOK_SECRET   (Fase 17 — Polar webhook signing secret,
   //                                               "whsec_..."; /webhooks/polar rejects with
   //                                               401 without it)
@@ -249,10 +258,9 @@
   //   wrangler secret put X_API_SECRET                     (X app consumer secret)
   //   wrangler secret put X_ACCESS_TOKEN_PRODUCT            (OAuth1.0a token, @ToolSnapMCP — via scripts/x-authorize.mts)
   //   wrangler secret put X_ACCESS_TOKEN_SECRET_PRODUCT
-  //   wrangler secret put X_ACCESS_TOKEN_PERSONAL            (OAuth1.0a token, @icosaedro_one)
-  //   wrangler secret put X_ACCESS_TOKEN_SECRET_PERSONAL
   //   wrangler secret put X_USER_ID_PRODUCT                 (numeric X user id — for native reposts)
-  //   wrangler secret put X_USER_ID_PERSONAL
+  //   (A16: the @icosaedro_one token/secret/user id are NOT secrets of this
+  //   Worker any more — they live in toolsnap-x-personal, see workers/x-personal.)
   //   wrangler secret put X_TG_BOT_TOKEN                    (dedicated X Agent Telegram bot, from BotFather)
   //   wrangler secret put X_TG_WEBHOOK_SECRET                (random string; also passed to Telegram's setWebhook secret_token)
   //   -- Fase 22.4 — reply-guy (see vault nota 14 for the prompt/config themselves, loaded into x_prompts, NOT here) --

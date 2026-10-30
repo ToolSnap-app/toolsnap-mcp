@@ -5,6 +5,8 @@
  * so this only needs to run once per account (product @ToolSnapMCP,
  * personal @icosaedro_one) to mint the token/secret pair that goes into
  * X_ACCESS_TOKEN_(PRODUCT|PERSONAL) / X_ACCESS_TOKEN_SECRET_(PRODUCT|PERSONAL).
+ * Since A16 the personal pair lives in toolsnap-x-personal (workers/x-personal),
+ * not in toolsnap-mcp: the printed instructions say which Worker gets what.
  *
  * Run:  X_API_KEY=... X_API_SECRET=... npx tsx scripts/x-authorize.mts
  *
@@ -58,13 +60,18 @@ async function main() {
   );
 
   console.log(`\nAuthorized as @${screenName} (user id ${userId}).\n`);
-  console.log("Store these (pick PRODUCT or PERSONAL to match the account you just authorized):\n");
-  console.log(`  wrangler secret put X_ACCESS_TOKEN_<PRODUCT|PERSONAL>`);
-  console.log(`    -> ${accessToken}`);
-  console.log(`  wrangler secret put X_ACCESS_TOKEN_SECRET_<PRODUCT|PERSONAL>`);
-  console.log(`    -> ${accessTokenSecret}`);
-  console.log(`  wrangler secret put X_USER_ID_<PRODUCT|PERSONAL>`);
-  console.log(`    -> ${userId}`);
+  // A16: each account's token goes to a DIFFERENT Worker. Product
+  // (@ToolSnapMCP) -> toolsnap-mcp; personal (@icosaedro_one) ->
+  // toolsnap-x-personal, never back into toolsnap-mcp.
+  console.log("Store these in the block that matches the account you just authorized:\n");
+  console.log("  PRODUCT (@ToolSnapMCP) -> toolsnap-mcp, from the repo root:");
+  console.log(`    wrangler secret put X_ACCESS_TOKEN_PRODUCT          -> ${accessToken}`);
+  console.log(`    wrangler secret put X_ACCESS_TOKEN_SECRET_PRODUCT   -> ${accessTokenSecret}`);
+  console.log(`    wrangler secret put X_USER_ID_PRODUCT               -> ${userId}`);
+  console.log("\n  PERSONAL (@icosaedro_one) -> toolsnap-x-personal, from the repo root:");
+  console.log(`    wrangler secret put X_ACCESS_TOKEN_PERSONAL --config workers/x-personal/wrangler.jsonc         -> ${accessToken}`);
+  console.log(`    wrangler secret put X_ACCESS_TOKEN_SECRET_PERSONAL --config workers/x-personal/wrangler.jsonc  -> ${accessTokenSecret}`);
+  console.log(`    wrangler secret put X_USER_ID_PERSONAL --config workers/x-personal/wrangler.jsonc             -> ${userId}`);
   console.log("\nRepeat this script for the other account before deploying.");
 }
 

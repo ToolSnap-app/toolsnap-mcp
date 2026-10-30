@@ -29,10 +29,10 @@ X_API_KEY=your-x-app-consumer-key
 X_API_SECRET=your-x-app-consumer-secret
 X_ACCESS_TOKEN_PRODUCT=oauth1-access-token-for-toolsnapmcp
 X_ACCESS_TOKEN_SECRET_PRODUCT=oauth1-access-token-secret-for-toolsnapmcp
-X_ACCESS_TOKEN_PERSONAL=oauth1-access-token-for-icosaedro_one
-X_ACCESS_TOKEN_SECRET_PERSONAL=oauth1-access-token-secret-for-icosaedro_one
 X_USER_ID_PRODUCT=numeric-x-user-id-for-toolsnapmcp
-X_USER_ID_PERSONAL=numeric-x-user-id-for-icosaedro_one
+# A16: the @icosaedro_one token is NOT a secret of this Worker — it lives in
+# toolsnap-x-personal (workers/x-personal), reached via the X_PERSONAL
+# binding. Locally, X_DRY_RUN=1 below covers the personal account without it.
 # "1" makes the publisher log instead of calling the real X API — use this
 # for local/e2e testing (scripts/x-agent-test.mts sets it automatically).
 X_DRY_RUN=1

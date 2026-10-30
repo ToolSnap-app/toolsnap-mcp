@@ -42,6 +42,7 @@ import { verifyApiKey, touchKey, accountAddress, accountExists, type VerifiedKey
 import type { VerifiedOAuthToken } from "../oauth/tokens.js";
 import { VIDEO_PAYMENT_CONTEXT_KEY, type VideoPaymentContext } from "../tools/video-generate.js";
 import { alertNonceNotRecorded } from "../x402/nonce-alert.js";
+import { maybeCheckRelayerBalance } from "../alerts/relayer-balance.js";
 import type { SettlementResult } from "../x402/middleware.js";
 
 /**
@@ -259,6 +260,9 @@ async function handleAccountDeposit(
       isError: true,
     });
   }
+
+  // A16 — the relayer just paid gas: check it is still above Unai's floor.
+  ctx.waitUntil(maybeCheckRelayerBalance(env));
 
   if (!settlement.nonceRecorded) {
     // The ledger row written by creditDeposit below keeps the nonce anyway.
@@ -1319,6 +1323,8 @@ export async function dispatch(
         try {
           const s = await settleX402(env, cdpRequest, verifyResult.authorization!, verifyResult.signature!);
           settlement = s;
+          // A16 — the relayer paid the gas (CDP off or unavailable): check its floor.
+          if (s.detail.startsWith("settler=relayer")) ctx.waitUntil(maybeCheckRelayerBalance(env));
           // Keep the "cdp verify unavailable" note when the relayer settled.
           if (cdpRequest) settleDetail = s.detail;
         } catch (err) {

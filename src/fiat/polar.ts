@@ -13,16 +13,9 @@ import { accountAddress } from "./keys.js";
 
 export interface PolarEnv {
   PREPAID_DB: D1Database;
-  POLAR_ACCESS_TOKEN?: string;
   POLAR_WEBHOOK_SECRET?: string;
   POLAR_PRODUCT_ID?: string;
   POLAR_ENV?: string; // "sandbox" | "production" (default production)
-}
-
-function apiBase(env: PolarEnv): string {
-  return (env.POLAR_ENV ?? "production") === "sandbox"
-    ? "https://sandbox-api.polar.sh"
-    : "https://api.polar.sh";
 }
 
 // ---------------------------------------------------------------------------
@@ -216,77 +209,10 @@ export async function debugPolarSignature(
   return debug;
 }
 
-// ---------------------------------------------------------------------------
-// Checkout session (Polar API v1)
-// ---------------------------------------------------------------------------
-
-export interface CheckoutSession {
-  id: string;
-  url: string;
-}
-
-/**
- * Create a Polar checkout session for a fixed USD amount (pay-what-you-want
- * product). `accountId` is passed as metadata for recharges (an existing
- * account topping up) — omit it for a brand-new signup.
- */
-export async function createCheckoutSession(
-  env: PolarEnv,
-  amountUsd: number,
-  opts: { successUrl: string; accountId?: string }
-): Promise<CheckoutSession> {
-  if (!env.POLAR_ACCESS_TOKEN || !env.POLAR_PRODUCT_ID) {
-    throw new Error("Polar is not configured (POLAR_ACCESS_TOKEN / POLAR_PRODUCT_ID missing)");
-  }
-  const body: Record<string, unknown> = {
-    products: [env.POLAR_PRODUCT_ID],
-    amount: Math.round(amountUsd * 100), // cents — PWYW custom price
-    success_url: opts.successUrl,
-    metadata: opts.accountId ? { account_id: opts.accountId } : {},
-  };
-  const res = await fetch(`${apiBase(env)}/v1/checkouts/`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Polar checkout creation failed (${res.status}): ${text.slice(0, 300)}`);
-  }
-  const data = (await res.json()) as { id: string; url: string };
-  return { id: data.id, url: data.url };
-}
-
-export interface PolarCheckout {
-  id: string;
-  status: "open" | "expired" | "confirmed" | "succeeded" | "failed";
-  customerEmail: string | null;
-  metadata: Record<string, unknown>;
-}
-
-/** Fetch a checkout session's current status (for the /welcome page). */
-export async function getCheckout(env: PolarEnv, checkoutId: string): Promise<PolarCheckout | null> {
-  if (!env.POLAR_ACCESS_TOKEN) return null;
-  const res = await fetch(`${apiBase(env)}/v1/checkouts/${encodeURIComponent(checkoutId)}`, {
-    headers: { Authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}` },
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as {
-    id: string;
-    status: PolarCheckout["status"];
-    customer_email: string | null;
-    metadata?: Record<string, unknown>;
-  };
-  return {
-    id: data.id,
-    status: data.status,
-    customerEmail: data.customer_email,
-    metadata: data.metadata ?? {},
-  };
-}
+// Checkout sessions (POST/GET /v1/checkouts) moved to toolsnap-portal in
+// F21.2 and were removed from here in A16 (2026-10-30), together with
+// POLAR_ACCESS_TOKEN: this Worker never calls the Polar API, it only verifies
+// the webhook signature (POLAR_WEBHOOK_SECRET).
 
 // ---------------------------------------------------------------------------
 // Account resolution + idempotent crediting (webhook only)

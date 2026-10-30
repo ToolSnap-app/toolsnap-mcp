@@ -17,6 +17,7 @@ import {
   type PublishResult,
   type XPersonalResult,
 } from "../../../src/x-agent/client.js";
+import type { Reserva } from "./limiter.js";
 import type { OAuth1Credentials } from "../../../src/x-agent/oauth1.js";
 
 export interface XPersonalEnv {
@@ -33,8 +34,8 @@ export interface XPersonalEnv {
 
 /** Lo que ops.ts usa del DO (DurableObjectNamespace<PublicationLimiter> lo cumple). */
 export interface LimiterStub {
-  reservar(dia: string, tope: number): Promise<{ ok: boolean; usadas: number }> | { ok: boolean; usadas: number };
-  liberar(dia: string): Promise<void> | void;
+  reservar(dia: string, tope: number): Promise<Reserva> | Reserva;
+  liberar(nonce: string): Promise<void> | void;
 }
 export interface LimiterNamespace {
   idFromName(name: string): unknown;
@@ -87,9 +88,10 @@ const LIMIT_REACHED: XPersonalResult<never> = {
 
 /**
  * Cuenta una publicacion en el DO, de forma atomica, ANTES de llamar a X; si X
- * la rechaza (status >= 400: no se publico nada) la devuelve. Un error de red
- * (status 0) no se devuelve: puede haberse publicado igualmente. Sin DO
- * enlazado o si falla, no se publica nada (falla cerrado, reintentable).
+ * la rechaza con un 4xx (no se publico nada) devuelve esa reserva por su nonce.
+ * Un error de red (status 0) o un 5xx no se devuelven: un 502/504 puede llegar
+ * con el tweet ya creado. Sin DO enlazado o si falla, no se publica nada
+ * (falla cerrado, reintentable).
  */
 async function withDailyCap<T>(
   env: XPersonalEnv,
@@ -100,16 +102,19 @@ async function withDailyCap<T>(
   if (!ns) return { ok: false, message: "x-personal: daily cap not configured (LIMITE_PUBLICACIONES binding missing)", status: 0, retryable: true };
   const dia = dayUtc(now());
   let stub: LimiterStub;
+  let nonce: string | undefined;
   try {
     stub = ns.get(ns.idFromName(LIMITER_NAME));
-    if (!(await stub.reservar(dia, TOPE_DIARIO)).ok) return LIMIT_REACHED;
+    const reserva = await stub.reservar(dia, TOPE_DIARIO);
+    if (!reserva.ok) return LIMIT_REACHED;
+    nonce = reserva.nonce;
   } catch (err) {
     return { ok: false, message: `x-personal: daily cap unavailable: ${err instanceof Error ? err.message : String(err)}`, status: 0, retryable: true };
   }
   const result = await fn();
-  if (!result.ok && result.status >= 400) {
+  if (!result.ok && result.status >= 400 && result.status < 500 && nonce) {
     try {
-      await stub.liberar(dia);
+      await stub.liberar(nonce);
     } catch {
       // Contar de mas es el lado seguro del tope.
     }

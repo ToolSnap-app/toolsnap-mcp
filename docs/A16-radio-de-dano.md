@@ -193,12 +193,30 @@ de nombre fijo `global`, migración `v1` en `wrangler.jsonc`): el Worker no
 tiene otro almacenamiento, el DO se despliega con el mismo token (Editor del
 Worker) y es atómico sin más; KV habría pedido otro permiso en el token, no es
 atómico (leer y escribir son dos operaciones) y su cuota de puts diarios ya es
-un cuello de botella. Si X rechaza la publicación (status >= 400) la reserva se
-devuelve; un fallo de red no se devuelve porque pudo publicarse. Al pasar el
-tope devuelve `limite-diario` (429, `retryable: false`) y `src/x-agent/client.ts`
-lo convierte en un `XApiError` no reintentable: la cola marca esa fila como
-fallida en vez de gastar sus intentos (hay que reprogramarla). Sin el binding
-falla cerrado.
+un cuello de botella.
+
+- **El DO no es exclusivo de este Worker.** Wrangler admite
+  `durable_objects.bindings[].script_name`, así que cualquier Worker de la
+  cuenta con permiso de deploy (también un `toolsnap-mcp` redesplegado por un
+  adversario) puede enlazar `PublicationLimiter` y llamar a sus dos métodos. El
+  diseño no cuenta con lo contrario: `reservar` desde fuera solo gasta cupo
+  (no publica nada; como mucho agota el tope del día, que ya es el límite de
+  daño) y `liberar` exige el `nonce` de una reserva concreta y de un solo uso,
+  así que un tercero solo puede devolver lo que él mismo reservó y nunca bajar
+  el contador de las reservas de otros. El DO no tiene `fetch` (no hay URL).
+- Si X rechaza con un **4xx** (no se publicó nada) la reserva se devuelve por
+  su nonce. Un fallo de red y un **5xx** no se devuelven: un 502/504 puede
+  llegar con el tweet ya creado. Sin el binding falla cerrado (reintentable).
+- Al pasar el tope devuelve `limite-diario` (429, `retryable: false`) y
+  `src/x-agent/client.ts` lo convierte en un `XApiError` con `code:
+  "limite-diario"` no reintentable. **Efecto en la cola**
+  (`src/x-agent/publish-one.ts`): la fila no se marca `failed` (eso bloquearía
+  a los hijos de un hilo) sino que vuelve a `scheduled` con `scheduled_at` a
+  las 00:00 UTC del día siguiente, sin gastar intento y con aviso por Telegram;
+  los hijos esperan a que su padre se publique, así que un hilo cortado por el
+  tope sigue solo al día siguiente. Excepción: las respuestas (`kind='reply'`)
+  no se posponen (solo valen si salen enseguida) y fallan como cualquier
+  rechazo, para contestarlas a mano.
 
 ## 6. Orden de puesta en marcha
 

@@ -79,7 +79,7 @@ function unwrap<T>(r: XPersonalResult<T>): T {
   // The daily cap never clears within the queue's retry window (the next
   // cron tick is minutes away, the cap resets at 00:00 UTC): fail the post for
   // good instead of burning its attempts, whatever `retryable` the Worker says.
-  if (r.code === "limite-diario") throw new XApiError(r.message, r.status, false);
+  if (r.code === "limite-diario") throw new XApiError(r.message, r.status, false, r.code);
   throw new XApiError(r.message, r.status, r.retryable);
 }
 
@@ -99,7 +99,8 @@ export class XApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly retryable: boolean
+    public readonly retryable: boolean,
+    public readonly code?: XPersonalErrorCode
   ) {
     super(message);
     this.name = "XApiError";

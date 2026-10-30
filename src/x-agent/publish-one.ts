@@ -9,7 +9,7 @@
  * module's caller and publisher.ts depend on.
  */
 import { publishTweet, repostTweet, uploadMedia, XApiError, type XAgentEnv } from "./client.js";
-import { claimForPublishing, getQueueRow, markFailedOrRetry, markPublished, type XQueueRow } from "./queue.js";
+import { claimForPublishing, deferToNextUtcDay, getQueueRow, markFailedOrRetry, markPublished, type XQueueRow } from "./queue.js";
 
 export interface PublishOneEnv extends XAgentEnv {
   PREPAID_DB: D1Database;
@@ -85,7 +85,9 @@ export async function resolveMediaIds(env: PublishOneEnv, row: XQueueRow): Promi
 export type PublishNowResult =
   | { status: "published"; tweetId: string }
   | { status: "already_claimed" }
-  | { status: "retry" | "failed"; error: string };
+  | { status: "retry" | "failed"; error: string }
+  // The personal account's daily cap was hit: the row waits for 00:00 UTC.
+  | { status: "deferred"; error: string; until: number };
 
 /**
  * Claim + publish exactly one row right now (not gated on scheduled_at/veto
@@ -103,8 +105,16 @@ export async function attemptPublishNow(env: PublishOneEnv, row: XQueueRow): Pro
     await markPublished(db, row.id, result.tweetId);
     return { status: "published", tweetId: result.tweetId };
   } catch (err) {
-    const retryable = err instanceof XApiError ? err.retryable : true;
     const message = err instanceof Error ? err.message : String(err);
+    // Daily cap of toolsnap-x-personal: not a failure. Marking the row
+    // `failed` would also block the rest of a thread, so a capped thread
+    // resumes by itself the next UTC day (each part waits on its parent).
+    // Replies are the exception: they are only worth posting right away, so
+    // a capped reply fails like any other refusal and is answered by hand.
+    if (err instanceof XApiError && err.code === "limite-diario" && row.kind !== "reply") {
+      return { status: "deferred", error: message, until: await deferToNextUtcDay(db, row.id, message) };
+    }
+    const retryable = err instanceof XApiError ? err.retryable : true;
     const { willRetry } = await markFailedOrRetry(db, row.id, message, retryable);
     return { status: willRetry ? "retry" : "failed", error: message };
   }

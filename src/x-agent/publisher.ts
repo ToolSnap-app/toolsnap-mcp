@@ -113,6 +113,11 @@ export async function runXPublisher(env: XPublisherEnv): Promise<{ attempted: nu
     if (result.status === "already_claimed") continue; // another cron tick (or overlap) already took it
     if (result.status === "published") {
       published++;
+    } else if (result.status === "deferred") {
+      await sendXAgentMessage(
+        env,
+        `⏸️ *Tope diario de la cuenta personal* (15 publicaciones): #${row.id} pospuesto a las 00:00 UTC. Sus hijos esperan a que se publique.`
+      );
     } else if (result.status === "failed" || result.status === "retry") {
       failed++;
       if (result.status === "failed") {

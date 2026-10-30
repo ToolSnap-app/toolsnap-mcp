@@ -358,7 +358,9 @@ assert(TOPE_DIARIO === 15, "the cap is 15 publications a day");
   assert(nextDay.ok, "the next UTC day publishes again");
   assert(lim.ids.every((id) => id === "global"), "every call hits the single fixed-name instance");
 
-  // A post X refuses (4xx/5xx) is given back; one that never got an answer is not.
+  // A post X refuses with a 4xx is given back (by nonce); one whose outcome is
+  // unknown (network error) or that got a 5xx (a 502/504 can arrive with the
+  // tweet already created) stays counted.
   const lim2 = newLimiterNamespace();
   const env2 = { ...personalEnv, LIMITE_PUBLICACIONES: lim2.ns };
   nextStatus = 403;
@@ -366,7 +368,14 @@ assert(TOPE_DIARIO === 15, "the cap is 15 publications a day");
   nextStatus = 200;
   let okCount = 0;
   for (let i = 0; i < 16; i++) if ((await opsPublish(env2, { text: `ok ${i}` }, now)).ok) okCount++;
-  assert(okCount === 15, "X refusals do not eat the cap (20 refused, then 15 of 16 go through)");
+  assert(okCount === 15, "X 4xx refusals do not eat the cap (20 refused, then 15 of 16 go through)");
+  const lim2b = newLimiterNamespace();
+  const env2b = { ...personalEnv, LIMITE_PUBLICACIONES: lim2b.ns };
+  nextStatus = 503;
+  for (let i = 0; i < 15; i++) await opsPublish(env2b, { text: "5xx" }, now);
+  nextStatus = 200;
+  const after5xx = await opsPublish(env2b, { text: "after 5xx" }, now);
+  assert(!after5xx.ok && after5xx.code === "limite-diario", "X 5xx answers stay counted (the tweet may exist)");
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => {
     throw new Error("network down");
@@ -383,11 +392,14 @@ assert(TOPE_DIARIO === 15, "the cap is 15 publications a day");
   const noDo = await opsPublish(personalEnv, { text: "x" }, now);
   assert(!noDo.ok && /daily cap/.test(noDo.ok ? "" : noDo.message) && noDo.retryable && calls.length === 0, "without the DO binding it refuses, retryable, and calls nothing");
 
-  // Atomic under concurrency: 40 parallel publishes, exactly 15 pass.
+  // 15 of 40 in a row. This does NOT test concurrency: the stub hands back the
+  // instance and `reservar` is synchronous, so the calls serialise here
+  // whatever the caller does. Atomicity is the DO runtime's guarantee (one call
+  // at a time on a synchronous method, plus transactionSync), not this test's.
   const lim4 = newLimiterNamespace();
   const env4 = { ...personalEnv, LIMITE_PUBLICACIONES: lim4.ns };
   const burst = await Promise.all(Array.from({ length: 40 }, (_, i) => opsPublish(env4, { text: `p${i}` }, now)));
-  assert(burst.filter((x) => x.ok).length === 15, "40 parallel publishes: exactly 15 pass");
+  assert(burst.filter((x) => x.ok).length === 15, "15 of 40 publishes go through, in sequence");
 }
 
 async function xpUploadAt(env: typeof personalEnv) {
@@ -407,7 +419,7 @@ assert(err instanceof XApiError && err.retryable === true, "a plain X 429 stays 
 // The DO exposes nothing by HTTP and the RPC surface is pinned.
 const protoNames = (c: { prototype: object }) => Object.getOwnPropertyNames(c.prototype).sort().join();
 assert(!("fetch" in PublicationLimiter.prototype) && !("alarm" in PublicationLimiter.prototype) && !("webSocketMessage" in PublicationLimiter.prototype), "PublicationLimiter has no fetch, alarm or websocket handlers");
-assert(protoNames(PublicationLimiter) === "constructor,liberar,reservar", "PublicationLimiter exposes only reservar and liberar (to this Worker alone)");
+assert(protoNames(PublicationLimiter) === "constructor,liberar,reservar", "PublicationLimiter exposes only reservar and liberar");
 assert(protoNames(XPersonal) === "constructor,publish,repost,uploadMedia", "XPersonal RPC surface is exactly publish, uploadMedia, repost");
 {
   const lim5 = newLimiterNamespace();
@@ -421,6 +433,28 @@ assert(protoNames(XPersonal) === "constructor,publish,repost,uploadMedia", "XPer
     }
   }
   assert(bad === 3, "the DO rejects a malformed day or an out-of-range cap");
+}
+
+// Any Worker of the account can bind this class (script_name), so the DO is
+// built to survive its two methods being called by a third party: `reservar`
+// only spends quota, and `liberar` only returns a reservation by its own
+// single-use nonce.
+{
+  const lim6 = newLimiterNamespace();
+  const stub6 = lim6.ns.get(null) as unknown as {
+    reservar(d: string, t: number): { ok: boolean; usadas: number; nonce?: string };
+    liberar(n: string): void;
+  };
+  const rs = Array.from({ length: 15 }, () => stub6.reservar("2026-11-03", 15));
+  assert(rs.every((x) => x.ok && x.nonce) && new Set(rs.map((x) => x.nonce)).size === 15, "each reservation gets its own nonce");
+  for (let i = 0; i < 50; i++) stub6.liberar(`guess-${i}`);
+  assert(!stub6.reservar("2026-11-03", 15).ok, "calling liberar with nonces it never got changes nothing");
+  stub6.liberar(rs[0].nonce as string);
+  stub6.liberar(rs[0].nonce as string);
+  assert(stub6.reservar("2026-11-03", 15).ok && !stub6.reservar("2026-11-03", 15).ok, "a nonce gives back exactly one slot, once");
+  const spam = newLimiterNamespace().ns.get(null) as unknown as typeof stub6;
+  for (let i = 0; i < 15; i++) spam.reservar("2026-11-03", 15);
+  assert(!spam.reservar("2026-11-03", 15).ok, "a third party calling reservar can only spend quota (and publishes nothing)");
 }
 
 console.log(failures === 0 ? "\nAll x-personal boundary checks passed." : `\n${failures} check(s) failed.`);

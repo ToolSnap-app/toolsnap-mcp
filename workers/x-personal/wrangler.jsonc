@@ -16,7 +16,9 @@
   "observability": { "enabled": true },
   // Tope diario de publicaciones (15 al dia UTC, src/limiter.ts): un Durable
   // Object con SQLite y una sola instancia, porque este Worker no tiene otro
-  // almacenamiento. Solo lo ve este Worker (nadie mas declara este binding).
+  // almacenamiento. OJO: no es exclusivo de este Worker (otro Worker de la
+  // cuenta puede enlazar la clase con `script_name`); por eso `liberar` pide el
+  // nonce de la reserva y `reservar` desde fuera solo gasta cupo. Ver limiter.ts.
   "durable_objects": {
     "bindings": [{ "name": "LIMITE_PUBLICACIONES", "class_name": "PublicationLimiter" }]
   },

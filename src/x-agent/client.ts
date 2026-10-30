@@ -1,37 +1,75 @@
 /**
- * X API v2 client — publishing only (POST /2/tweets). Two accounts
- * ("product" = @ToolSnapMCP, "personal" = @icosaedro_one), each with its own
- * OAuth1.0a access token/secret sharing one app (consumer key/secret).
+ * X API v2 client. Two accounts ("product" = @ToolSnapMCP, "personal" =
+ * @icosaedro_one), each with its own OAuth1.0a access token/secret sharing
+ * one app (consumer key/secret).
+ *
+ * A16 (2026-10-30): only the PRODUCT tokens live in this Worker. The personal
+ * account's tokens live in the separate `toolsnap-x-personal` Worker
+ * (workers/x-personal), reached through the X_PERSONAL service binding, which
+ * exposes exactly three operations (publish, upload media, repost). So
+ * whoever reads or redeploys toolsnap-mcp can queue posts for @icosaedro_one
+ * but never walks away with the account's credentials, and cannot use them
+ * for anything else (DMs, follows, deletes, profile).
+ *
+ * The *As functions below take explicit credentials and are shared with that
+ * Worker; the account-routing wrappers are what the rest of src/ calls.
  */
 
 import { signOAuth1, type OAuth1Credentials } from "./oauth1.js";
 
 export type XAccount = "product" | "personal";
 
+/**
+ * What the X_PERSONAL service binding answers. Errors come back as values,
+ * not throws: Workers RPC does not carry an XApiError's status/retryable
+ * across the boundary, and the publisher's retry logic needs both.
+ */
+export type XPersonalResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; message: string; status: number; retryable: boolean };
+
+/** The RPC surface of toolsnap-x-personal (workers/x-personal/src/index.ts). */
+export interface XPersonalService {
+  publish(params: Omit<PublishParams, "account">): Promise<XPersonalResult<PublishResult>>;
+  uploadMedia(bytes: Uint8Array, mimeType: string): Promise<XPersonalResult<string>>;
+  repost(targetTweetId: string): Promise<XPersonalResult<PublishResult>>;
+}
+
 export interface XAgentEnv {
   X_API_KEY?: string;
   X_API_SECRET?: string;
   X_ACCESS_TOKEN_PRODUCT?: string;
   X_ACCESS_TOKEN_SECRET_PRODUCT?: string;
-  X_ACCESS_TOKEN_PERSONAL?: string;
-  X_ACCESS_TOKEN_SECRET_PERSONAL?: string;
-  // Numeric X user ids, captured once from scripts/x-authorize.mts' PIN-flow
+  // Numeric X user id, captured once from scripts/x-authorize.mts' PIN-flow
   // output — needed for POST /2/users/:id/retweets (native repost, kind='repost').
   X_USER_ID_PRODUCT?: string;
-  X_USER_ID_PERSONAL?: string;
+  // A16 — service binding to toolsnap-x-personal (the personal account).
+  X_PERSONAL?: XPersonalService;
   X_DRY_RUN?: string; // "1" -> log instead of calling the real API (local/e2e testing)
 }
 
-function credsForAccount(env: XAgentEnv, account: XAccount): OAuth1Credentials {
+function productCreds(env: XAgentEnv): OAuth1Credentials {
   const consumerKey = env.X_API_KEY;
   const consumerSecret = env.X_API_SECRET;
-  const accessToken = account === "product" ? env.X_ACCESS_TOKEN_PRODUCT : env.X_ACCESS_TOKEN_PERSONAL;
-  const accessTokenSecret =
-    account === "product" ? env.X_ACCESS_TOKEN_SECRET_PRODUCT : env.X_ACCESS_TOKEN_SECRET_PERSONAL;
+  const accessToken = env.X_ACCESS_TOKEN_PRODUCT;
+  const accessTokenSecret = env.X_ACCESS_TOKEN_SECRET_PRODUCT;
   if (!consumerKey || !consumerSecret || !accessToken || !accessTokenSecret) {
-    throw new Error(`X credentials not configured for account "${account}"`);
+    throw new Error(`X credentials not configured for account "product"`);
   }
   return { consumerKey, consumerSecret, accessToken, accessTokenSecret };
+}
+
+function personalService(env: XAgentEnv): XPersonalService {
+  if (!env.X_PERSONAL) {
+    throw new Error(`X account "personal" not configured (X_PERSONAL service binding to toolsnap-x-personal missing)`);
+  }
+  return env.X_PERSONAL;
+}
+
+/** Turn a binding result back into a value or the XApiError the publisher expects. */
+function unwrap<T>(r: XPersonalResult<T>): T {
+  if (r.ok) return r.value;
+  throw new XApiError(r.message, r.status, r.retryable);
 }
 
 export interface PublishParams {
@@ -63,21 +101,34 @@ export class XApiError extends Error {
  * length, invalid quote/reply target) that a retry can never fix.
  */
 export async function publishTweet(env: XAgentEnv, params: PublishParams): Promise<PublishResult> {
-  const url = "https://api.x.com/2/tweets";
+  if (env.X_DRY_RUN === "1") {
+    const fakeId = `dryrun_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    console.log(`[x-agent DRY_RUN] would POST /2/tweets as ${params.account}:`, JSON.stringify(tweetBody(params)));
+    return { tweetId: fakeId };
+  }
+  if (params.account === "personal") {
+    const { account: _account, ...rest } = params;
+    return unwrap(await personalService(env).publish(rest));
+  }
+  return publishTweetAs(productCreds(env), params);
+}
 
+function tweetBody(params: Omit<PublishParams, "account">): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   if (params.text) body.text = params.text;
   if (params.quoteTweetId) body.quote_tweet_id = params.quoteTweetId;
   if (params.replyToTweetId) body.reply = { in_reply_to_tweet_id: params.replyToTweetId };
   if (params.mediaIds?.length) body.media = { media_ids: params.mediaIds };
+  return body;
+}
 
-  if (env.X_DRY_RUN === "1") {
-    const fakeId = `dryrun_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    console.log(`[x-agent DRY_RUN] would POST /2/tweets as ${params.account}:`, JSON.stringify(body));
-    return { tweetId: fakeId };
-  }
-
-  const creds = credsForAccount(env, params.account);
+/** POST /2/tweets with explicit credentials (shared with toolsnap-x-personal). */
+export async function publishTweetAs(
+  creds: OAuth1Credentials,
+  params: Omit<PublishParams, "account">
+): Promise<PublishResult> {
+  const url = "https://api.x.com/2/tweets";
+  const body = tweetBody(params);
   const authHeader = await signOAuth1("POST", url, creds);
 
   const res = await fetch(url, {
@@ -124,15 +175,18 @@ export async function publishTweet(env: XAgentEnv, params: PublishParams): Promi
  * image post), that's the first thing to check.
  */
 export async function uploadMedia(env: XAgentEnv, account: XAccount, bytes: Uint8Array, mimeType: string): Promise<string> {
-  const url = "https://api.x.com/2/media/upload";
-
   if (env.X_DRY_RUN === "1") {
     const fakeId = `dryrun_media_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[x-agent DRY_RUN] would upload media (${bytes.length} bytes, ${mimeType}) as ${account}`);
     return fakeId;
   }
+  if (account === "personal") return unwrap(await personalService(env).uploadMedia(bytes, mimeType));
+  return uploadMediaAs(productCreds(env), bytes, mimeType);
+}
 
-  const creds = credsForAccount(env, account);
+/** INIT/APPEND/FINALIZE with explicit credentials (shared with toolsnap-x-personal). */
+export async function uploadMediaAs(creds: OAuth1Credentials, bytes: Uint8Array, mimeType: string): Promise<string> {
+  const url = "https://api.x.com/2/media/upload";
 
   async function call(form: FormData): Promise<{ ok: boolean; status: number; text: string }> {
     const authHeader = await signOAuth1("POST", url, creds);
@@ -214,7 +268,7 @@ export async function fetchTweetMetrics(env: XAgentEnv, ids: string[]): Promise<
   const queryParams = { ids: ids.join(","), "tweet.fields": "public_metrics" };
   const url = `${baseUrl}?${new URLSearchParams(queryParams).toString()}`;
 
-  const creds = credsForAccount(env, "product");
+  const creds = productCreds(env);
   const authHeader = await signOAuth1("GET", baseUrl, creds, {}, queryParams);
 
   const res = await fetch(url, { method: "GET", headers: { Authorization: authHeader } });
@@ -248,16 +302,22 @@ export async function fetchTweetMetrics(env: XAgentEnv, ids: string[]): Promise<
  * no id of its own for the retweet action itself).
  */
 export async function repostTweet(env: XAgentEnv, account: XAccount, targetTweetId: string): Promise<PublishResult> {
-  const userId = account === "product" ? env.X_USER_ID_PRODUCT : env.X_USER_ID_PERSONAL;
-  if (!userId) throw new Error(`X user id not configured for account "${account}" (X_USER_ID_${account.toUpperCase()})`);
-  const url = `https://api.x.com/2/users/${userId}/retweets`;
-
   if (env.X_DRY_RUN === "1") {
-    console.log(`[x-agent DRY_RUN] would POST ${url} as ${account}: retweet ${targetTweetId}`);
+    console.log(`[x-agent DRY_RUN] would POST /2/users/:id/retweets as ${account}: retweet ${targetTweetId}`);
     return { tweetId: targetTweetId };
   }
+  if (account === "personal") return unwrap(await personalService(env).repost(targetTweetId));
+  if (!env.X_USER_ID_PRODUCT) throw new Error(`X user id not configured for account "product" (X_USER_ID_PRODUCT)`);
+  return repostTweetAs(productCreds(env), env.X_USER_ID_PRODUCT, targetTweetId);
+}
 
-  const creds = credsForAccount(env, account);
+/** POST /2/users/:id/retweets with explicit credentials (shared with toolsnap-x-personal). */
+export async function repostTweetAs(
+  creds: OAuth1Credentials,
+  userId: string,
+  targetTweetId: string
+): Promise<PublishResult> {
+  const url = `https://api.x.com/2/users/${userId}/retweets`;
   const authHeader = await signOAuth1("POST", url, creds);
   const res = await fetch(url, {
     method: "POST",

@@ -9,6 +9,7 @@ import { checkSurfaceDigest } from "./alerts/surface-digest.js";
 import { checkServerHealth } from "./alerts/health.js";
 import { recordCronOk, recordCronError } from "./alerts/cron-status.js";
 import { sendTelegram } from "./alerts/telegram.js";
+import { checkRelayerBalance, RELAYER_FLOOR_USD, RELAYER_CAP_USD } from "./alerts/relayer-balance.js";
 import { looksLikeApiKey, issueKey, revokeKey, accountExists, accountAddress, verifyApiKey, touchKey } from "./fiat/keys.js";
 import { debitBalance, refundDebit, getBalanceMicro, microToUsdc, usdcToMicro } from "./x402/prepaid.js";
 import { handleCmsAuthStart, handleCmsAuthCallback } from "./cms-auth.js";
@@ -26,6 +27,7 @@ import { X_PANEL_HTML } from "./x-agent/panel.js";
 import { X_PUSH_SW_JS } from "./x-agent/push-sw.js";
 import { dispatchXAgentApi } from "./x-agent/panel-api.js";
 import { fetchXMetrics } from "./x-agent/metrics.js";
+import type { XPersonalService } from "./x-agent/client.js";
 import { snapshotDirectoryStats } from "./analytics/directory-stats.js";
 import { rollupAnalyticsDaily } from "./analytics/daily.js";
 
@@ -42,6 +44,10 @@ export interface Env {
   X402_PREPAID_PRICE_USDC: string;
   X402_MIN_DEPOSIT_USDC: string;
   BASE_RPC_URL: string;
+
+  // A16 — public address of the relayer wallet, for the read-only balance
+  // check (src/alerts/relayer-balance.ts). Var in wrangler.jsonc.
+  RELAYER_ADDRESS?: string;
 
   // x402 secrets (set via: wrangler secret put <NAME>)
   X402_PAY_TO_ADDRESS: string;
@@ -131,9 +137,9 @@ export interface Env {
   // Comma-separated EVM addresses of our own wallets — their paid calls are marked internal.
   INTERNAL_WALLETS?: string;
 
-  // Fiat rail (Fase 17) — Polar (Merchant of Record) checkout + webhook.
-  // Secrets (set via: wrangler secret put POLAR_ACCESS_TOKEN / POLAR_WEBHOOK_SECRET).
-  POLAR_ACCESS_TOKEN?: string;
+  // Fiat rail (Fase 17) — Polar (Merchant of Record) webhook. Checkout lives
+  // in toolsnap-portal since F21.2, so this Worker holds no Polar API token
+  // (A16 removed POLAR_ACCESS_TOKEN): set via wrangler secret put POLAR_WEBHOOK_SECRET.
   POLAR_WEBHOOK_SECRET?: string;
   // Product id for the "ToolSnap Credits" pay-what-you-want product (var, not secret).
   POLAR_PRODUCT_ID?: string;
@@ -147,16 +153,18 @@ export interface Env {
 
   // Fase 22.1 — ToolSnap X Agent. X API v2 app (one app, two OAuth1.0a user
   // tokens — see nota 10 §3 / vault plan D3). Set via: wrangler secret put <NAME>.
+  // A16: only the product account's token lives here; the personal one
+  // (@icosaedro_one) lives in toolsnap-x-personal, reached via X_PERSONAL.
   X_API_KEY?: string;
   X_API_SECRET?: string;
   X_ACCESS_TOKEN_PRODUCT?: string;
   X_ACCESS_TOKEN_SECRET_PRODUCT?: string;
-  X_ACCESS_TOKEN_PERSONAL?: string;
-  X_ACCESS_TOKEN_SECRET_PERSONAL?: string;
-  // Numeric X user ids (from scripts/x-authorize.mts output) — needed for
+  // Numeric X user id (from scripts/x-authorize.mts output) — needed for
   // native reposts (POST /2/users/:id/retweets).
   X_USER_ID_PRODUCT?: string;
-  X_USER_ID_PERSONAL?: string;
+  // A16 — service binding (RPC entrypoint XPersonal) to toolsnap-x-personal,
+  // the only holder of the personal account's tokens. See workers/x-personal.
+  X_PERSONAL?: XPersonalService;
   // "1" -> publisher logs instead of calling the real X API (local/e2e testing).
   X_DRY_RUN?: string;
 
@@ -947,6 +955,35 @@ const handler = {
           getWeeklySurfaceDigest(env.PREPAID_DB),
         ]);
         return jsonResponse({ dashboard, weekly_digest: weeklyDigest });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return jsonResponse({ error: message }, 502);
+      }
+    }
+
+    // A16 — relayer gas balance against Unai's $5 floor / $50 cap. Same
+    // read-only token and headless prefix as /reports/analytics; pages the
+    // alerts chat (deduped 24h) when out of range. Not a cron on purpose:
+    // the relayer is also checked after each settlement it pays for.
+    if (method === "GET" && url.pathname === "/reports/relayer-balance") {
+      const token = /^Bearer\s+(.+)$/i.exec(request.headers.get("Authorization") ?? "")?.[1]?.trim();
+      if (!env.ANALYTICS_READ_TOKEN || token !== env.ANALYTICS_READ_TOKEN) {
+        return jsonResponse({ error: "Invalid or missing token." }, 401);
+      }
+      try {
+        const r = await checkRelayerBalance(env);
+        return jsonResponse({
+          address: r.address,
+          eth: r.eth,
+          eth_usd: r.ethUsd,
+          usd: Number(r.usd.toFixed(2)),
+          usdc: r.usdc,
+          total_usd: Number(r.totalUsd.toFixed(2)),
+          floor_usd: RELAYER_FLOOR_USD,
+          cap_usd: RELAYER_CAP_USD,
+          status: r.status,
+          alerted: r.alerted,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return jsonResponse({ error: message }, 502);

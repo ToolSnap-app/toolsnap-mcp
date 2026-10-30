@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // A16 (2026-10-30) — holds the personal X account's (@icosaedro_one) tokens,
+  // out of toolsnap-mcp. See workers/x-personal/src/index.ts and
+  // docs/A16-radio-de-dano.md. Deploy BEFORE toolsnap-mcp whenever the RPC
+  // surface changes: toolsnap-mcp's X_PERSONAL binding calls into this one.
+  //   npx wrangler deploy --config workers/x-personal/wrangler.jsonc
+  "name": "toolsnap-x-personal",
+  "account_id": "561a4c3a5324b4554556517bd1929bc1",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  // No public door at all: no routes, no workers.dev, no preview URLs. The
+  // only way in is the XPersonal RPC entrypoint through a service binding.
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true }
+  // Secrets (never stored here — upload via
+  // `wrangler secret put <NAME> --config workers/x-personal/wrangler.jsonc`):
+  //   X_API_KEY                       (X app consumer key — same app as toolsnap-mcp)
+  //   X_API_SECRET                    (X app consumer secret)
+  //   X_ACCESS_TOKEN_PERSONAL         (OAuth1.0a token, @icosaedro_one — scripts/x-authorize.mts)
+  //   X_ACCESS_TOKEN_SECRET_PERSONAL
+  //   X_USER_ID_PERSONAL              (numeric X user id — for native reposts)
+}

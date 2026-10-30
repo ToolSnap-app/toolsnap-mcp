@@ -151,7 +151,7 @@
     // Accion A14 — vigilancia de despliegues (src/alerts/deploy-watch.ts). Corre
     // en el cron de 5 minutos; necesita ademas el secret VIGIA_CF_TOKEN.
     "VIGIA_ACCOUNT_ID": "561a4c3a5324b4554556517bd1929bc1",
-    "VIGIA_WORKERS": "toolsnap-mcp,toolsnap-portal"
+    "VIGIA_WORKERS": "toolsnap-mcp,toolsnap-portal,toolsnap-x-personal"
   },
   // A16 (2026-10-30) — the personal X account's tokens live in a separate
   // Worker (workers/x-personal), reachable only through this binding's RPC

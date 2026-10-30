@@ -1,9 +1,16 @@
 // A16 — hook de carga de Node para "cloudflare:workers" (lo registra
-// test/_support/cloudflare-workers.ts). Solo hace falta WorkerEntrypoint.
+// test/_support/cloudflare-workers.ts). Solo hacen falta WorkerEntrypoint y
+// DurableObject (la clase base del limitador diario).
 const STUB_URL = "cloudflare-workers-stub:///index.mjs";
 
 const STUB_SOURCE = `
 export class WorkerEntrypoint {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+}
+export class DurableObject {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;

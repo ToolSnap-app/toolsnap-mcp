@@ -11,6 +11,9 @@
  *
  * Exposed verbs: publish, uploadMedia, repost. Nothing else the tokens could
  * do (read DMs, follow, delete, edit the profile) is reachable.
+ *
+ * publish and repost share a cap of 15 posts per UTC day, counted in the
+ * PublicationLimiter Durable Object (limiter.ts); uploadMedia does not count.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { PublishParams, PublishResult, XPersonalResult, XPersonalService } from "../../../src/x-agent/client.js";
@@ -29,6 +32,10 @@ export class XPersonal extends WorkerEntrypoint<XPersonalEnv> implements XPerson
     return repost(this.env, targetTweetId);
   }
 }
+
+// Durable Object classes must be exported from the main module. It is not
+// reachable from outside this Worker (see limiter.ts).
+export { PublicationLimiter } from "./limiter.js";
 
 export default {
   fetch: rejectFetch,

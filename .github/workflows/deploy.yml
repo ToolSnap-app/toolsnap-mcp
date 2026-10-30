@@ -76,6 +76,16 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_X_PERSONAL }}
 
+      # A14: igual que en el deploy principal. Necesita que
+      # CLOUDFLARE_API_TOKEN_X_PERSONAL tenga ademas Workers KV Storage: Edit
+      # (cuenta ToolSnap); hasta que se lo den, el paso falla sin cortar el
+      # deploy y la vigilancia avisara por cada deploy de este Worker.
+      - name: Register deployment as expected
+        continue-on-error: true
+        run: bash scripts/registrar-deploy.sh toolsnap-x-personal
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_X_PERSONAL }}
+
   deploy:
     name: Deploy Worker
     needs: [build, deploy-x-personal]

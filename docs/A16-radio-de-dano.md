@@ -177,12 +177,46 @@ Token propio: token de cuenta ToolSnap, Editor solo sobre el Worker
 `workers.dev`), caducidad 6 meses, como `CLOUDFLARE_API_TOKEN_X_PERSONAL` en
 el environment `production`. Cada job lee solo su token.
 
-Convive con el paso de registro de A14 (rama `claude/a14-alerta-deploys-*`,
-dentro del job `deploy`): las dos ramas se fusionan sin conflicto. La
-vigilancia de A14 mira `VIGIA_WORKERS` (`toolsnap-mcp,toolsnap-portal` por
-defecto); si se quiere vigilar también `toolsnap-x-personal`, hay que
-añadirlo ahí y registrar su deploy, y el token de este job (Editor de un solo
-Worker) no tiene `Workers KV Storage Edit`.
+Convive con el paso de registro de A14, que ahora también está en este job: la
+vigilancia mira `toolsnap-x-personal` (está en `VIGIA_WORKERS`) y el job
+registra su deployment con `scripts/registrar-deploy.sh toolsnap-x-personal`
+(`continue-on-error`). Para que el registro funcione, el token de este job
+(Editor de un solo Worker) necesita además `Workers KV Storage: Edit`; hasta
+que lo tenga, ese paso falla sin cortar el deploy y cada deploy del Worker
+avisa por Telegram.
+
+**Tope diario (2026-10-30, decisión de Unai).** `publish` y `repost` suman
+a un contador por día UTC antes de llamar a X y se niegan a partir de 15
+(`uploadMedia` no cuenta). Vive en un Durable Object con SQLite
+(`PublicationLimiter`, `workers/x-personal/src/limiter.ts`, una sola instancia
+de nombre fijo `global`, migración `v1` en `wrangler.jsonc`): el Worker no
+tiene otro almacenamiento, el DO se despliega con el mismo token (Editor del
+Worker) y es atómico sin más; KV habría pedido otro permiso en el token, no es
+atómico (leer y escribir son dos operaciones) y su cuota de puts diarios ya es
+un cuello de botella.
+
+- **El DO no es exclusivo de este Worker.** Wrangler admite
+  `durable_objects.bindings[].script_name`, así que cualquier Worker de la
+  cuenta con permiso de deploy (también un `toolsnap-mcp` redesplegado por un
+  adversario) puede enlazar `PublicationLimiter` y llamar a sus dos métodos. El
+  diseño no cuenta con lo contrario: `reservar` desde fuera solo gasta cupo
+  (no publica nada; como mucho agota el tope del día, que ya es el límite de
+  daño) y `liberar` exige el `nonce` de una reserva concreta y de un solo uso,
+  así que un tercero solo puede devolver lo que él mismo reservó y nunca bajar
+  el contador de las reservas de otros. El DO no tiene `fetch` (no hay URL).
+- Si X rechaza con un **4xx** (no se publicó nada) la reserva se devuelve por
+  su nonce. Un fallo de red y un **5xx** no se devuelven: un 502/504 puede
+  llegar con el tweet ya creado. Sin el binding falla cerrado (reintentable).
+- Al pasar el tope devuelve `limite-diario` (429, `retryable: false`) y
+  `src/x-agent/client.ts` lo convierte en un `XApiError` con `code:
+  "limite-diario"` no reintentable. **Efecto en la cola**
+  (`src/x-agent/publish-one.ts`): la fila no se marca `failed` (eso bloquearía
+  a los hijos de un hilo) sino que vuelve a `scheduled` con `scheduled_at` a
+  las 00:00 UTC del día siguiente, sin gastar intento y con aviso por Telegram;
+  los hijos esperan a que su padre se publique, así que un hilo cortado por el
+  tope sigue solo al día siguiente. Excepción: las respuestas (`kind='reply'`)
+  no se posponen (solo valen si salen enseguida) y fallan como cualquier
+  rechazo, para contestarlas a mano.
 
 ## 6. Orden de puesta en marcha
 
@@ -228,11 +262,8 @@ puede fusionar** hasta los pasos 1 a 3 (fusionar despliega `toolsnap-mcp`).
   variable, se vigila la wallet equivocada en silencio. Un `console.warn` en
   `settlePayment` cuando `account.address` (que ya calcula) difiera de
   `RELAYER_ADDRESS` evitaría la deriva sin exponer nada.
-- **M8. Superficie RPC fijada en el test.** Añadir a
-  `test/x-personal-boundary.ts` un `assert` sobre
-  `Object.getOwnPropertyNames(XPersonal.prototype)` (solo `constructor`,
-  `publish`, `uploadMedia`, `repost`) para que un verbo nuevo no entre sin
-  revisión.
+- **M8. Superficie RPC fijada en el test.** Hecho con el tope diario: el test
+  fija `Object.getOwnPropertyNames(XPersonal.prototype)`.
 - **M9. Token A3 y el binding.** Comprobar en el primer deploy (paso 4) que el
   token del deploy principal, Editor solo sobre `toolsnap-mcp`, puede declarar
   el binding a otro Worker. No debería necesitar más, pero si el deploy falla

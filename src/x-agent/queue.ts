@@ -386,3 +386,20 @@ export async function markFailedOrRetry(
   if (!willRetry) await blockChildren(db, id);
   return { willRetry };
 }
+
+/**
+ * The personal account's daily cap (`limite-diario`) was reached: put the row
+ * back to 'scheduled' for 00:00 UTC of the next day WITHOUT consuming an
+ * attempt and without blocking its children (they wait on this row anyway:
+ * getDueRows only releases a child once its parent has published). The error
+ * text is kept so the panel shows why it moved.
+ */
+export async function deferToNextUtcDay(db: D1Database, id: number, message: string): Promise<number> {
+  const ts = now();
+  const nextMidnight = (Math.floor(ts / 86400) + 1) * 86400;
+  await db
+    .prepare("UPDATE x_queue SET status = 'scheduled', scheduled_at = ?, error = ?, updated_at = ? WHERE id = ?")
+    .bind(nextMidnight, message.slice(0, 1000), ts, id)
+    .run();
+  return nextMidnight;
+}

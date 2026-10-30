@@ -143,7 +143,11 @@
     // (src/fal/budget.ts): rejects calls (before charging) once today's
     // accumulated estimated COGS would exceed this many USD. Lower it in
     // .dev.vars to test the breaker locally.
-    "FAL_DAILY_BUDGET_USD": "5"
+    "FAL_DAILY_BUDGET_USD": "5",
+    // Accion A14 — vigilancia de despliegues (src/alerts/deploy-watch.ts). Corre
+    // en el cron de 5 minutos; necesita ademas el secret VIGIA_CF_TOKEN.
+    "VIGIA_ACCOUNT_ID": "561a4c3a5324b4554556517bd1929bc1",
+    "VIGIA_WORKERS": "toolsnap-mcp,toolsnap-portal"
   },
   // KV namespace for x402 nonce replay-protection (created 2026-06-23).
   // Also holds prepaid spend-authorization nonces (single-use) and
@@ -238,6 +242,8 @@
   //                                               them GET /admin/auth returns a clear 500,
   //                                               never a silent client_id=undefined — see
   //                                               src/cms-auth.ts for the 2026-07-14 incident)
+  //   wrangler secret put VIGIA_CF_TOKEN         (A14 — token de SOLO LECTURA, Workers Metadata Read-Only en la
+  //                                               cuenta ToolSnap; sin el, la alerta de deploys no hace nada)
   //   -- Fase 22.1 — ToolSnap X Agent (see vault nota 06 Fase 22 + nota 10 for setup steps) --
   //   wrangler secret put X_API_KEY                       (X app consumer key, developer.x.com)
   //   wrangler secret put X_API_SECRET                     (X app consumer secret)

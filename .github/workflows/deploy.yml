@@ -75,6 +75,18 @@ jobs:
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # A14: registra el deployment recien hecho como ESPERADO en KV, para que
+      # la vigilancia de despliegues (src/alerts/deploy-watch.ts) distinga este
+      # deploy de uno hecho a mano (y un rollback, que reutiliza versiones). Necesita que el token tenga Workers KV
+      # Storage Edit; sin el, el paso avisa pero no corta los smoke tests (el
+      # deploy ya esta hecho) y la vigilancia lanzara una alerta por este deployment.
+      - name: Register deployment as expected
+        continue-on-error: true
+        run: bash scripts/registrar-deploy.sh toolsnap-mcp
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       # Post-deploy smoke test: a real MCP initialize against production.
       # Catches routing regressions the asset router can cause (2026-07-07:
       # /mcp returned a bare 405 for a day because run_worker_first didn't

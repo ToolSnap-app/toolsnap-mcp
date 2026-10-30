@@ -236,7 +236,7 @@ console.log("\nhealth");
     JSON.stringify(canaryDown.health));
   assert("health.last_event_ts is MAX(ts)", data.health.last_event_ts === now - 5 * 60_000);
   const crons = data.health.crons;
-  assert("crons lists the seven scheduled tasks in order", crons.map((c) => c.name).join() === CRON_TASK_NAMES.join() && crons.length === 7);
+  assert("crons lists the eight scheduled tasks in order", crons.map((c) => c.name).join() === CRON_TASK_NAMES.join() && crons.length === 8);
   assert("crons: last_ok read from KV", crons.find((c) => c.name === "health")?.last_ok_ts === now - 10 * 60_000);
   assert("crons: last_error read from KV", crons.find((c) => c.name === "usage-alerts")?.last_error === "D1 down");
   assert("crons: muted flag for the known X-credits failure", crons.find((c) => c.name === "x-agent-metrics")?.muted === true && crons.find((c) => c.name === "usage-alerts")?.muted === false);
@@ -253,9 +253,9 @@ console.log("\nhealth");
   console.warn = () => {};
   const broken = await getDashboardData(fakeD1().db, false, { kv: brokenKv, fresh: true });
   console.warn = warnKeep;
-  assert("a dead KV leaves crons null and does not break the payload", broken.health.crons.length === 7 && broken.health.crons.every((c) => c.last_ok_ts === null && c.last_error === null));
+  assert("a dead KV leaves crons null and does not break the payload", broken.health.crons.length === 8 && broken.health.crons.every((c) => c.last_ok_ts === null && c.last_error === null));
   const noKv = await getDashboardData(fakeD1().db, false, { fresh: true });
-  assert("no KV binding: same", noKv.health.crons.length === 7 && noKv.health.last_event_ts === null && noKv.health.broken_tools.length === 0);
+  assert("no KV binding: same", noKv.health.crons.length === 8 && noKv.health.last_event_ts === null && noKv.health.broken_tools.length === 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -295,6 +295,7 @@ export function buildDashboardFixture(now = Date.now(), opts: FixtureOptions = {
         { name: "health", last_ok_ts: now - 4 * 60000, last_error: null, last_error_ts: null, muted: false },
         { name: "usage-alerts", last_ok_ts: now - 9 * 3600000, last_error: null, last_error_ts: null, muted: false },
         { name: "x-agent-publisher", last_ok_ts: now - 3 * 60000, last_error: null, last_error_ts: null, muted: false },
+        { name: "deploy-watch", last_ok_ts: now - 4 * 60000, last_error: null, last_error_ts: null, muted: false },
         { name: "x-agent-metrics", last_ok_ts: now - 3 * DAY, last_error: "(402) credits-depleted", last_error_ts: now - 3600000, muted: true },
       ],
     };

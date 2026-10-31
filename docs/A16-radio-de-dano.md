@@ -39,7 +39,7 @@ valor del secret (leyendo el Worker, un `.dev.vars`, un log).
 | `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | `src/tools/keyword-research.ts` | tool `keyword_research` | Gastar el saldo prepago de DataForSEO | Dinero |
 | `FAL_API_KEY` | `src/fal/*`, `src/tools/{image-*,audio-*,text-to-speech,video-generate,remove-background}.ts` | tools de media | Gastar el saldo de fal.ai sin pasar por nuestro freno diario (`FAL_DAILY_BUDGET_USD` solo frena nuestro código) | Dinero |
 | `XAI_API_KEY` | `src/x-agent/xai.ts` | cron (reply-guy) | Gastar el crédito de xAI (límite de 20 $/mes en la consola, según `wrangler.jsonc`) | Dinero, acotado |
-| `SMITHERY_API_KEY` / `GLAMA_API_KEY` | `src/analytics/directory-stats.ts` | cron diario | Lo que permitan esas claves en sus paneles (pregunta abierta 5: si dejan editar las fichas) | Reputación |
+| `GLAMA_API_KEY` | `src/analytics/directory-stats.ts` | cron diario | Lo que permitan esas claves en sus paneles (pregunta abierta 5: si dejan editar las fichas) | Reputación |
 | `TELEGRAM_BOT_TOKEN` (+ `TELEGRAM_CHAT_ID`) | `src/alerts/telegram.ts` | alertas | Escribir a Unai como el bot de alertas (phishing por un canal de confianza) o leer sus updates | Cuenta, medio |
 | `X_TG_BOT_TOKEN` | `src/x-agent/telegram.ts` | cron, `/x-api/telegram/*` | Escribir como el bot del X Agent: tarjetas de aprobación falsas | Cuenta, medio |
 | `X_TG_WEBHOOK_SECRET` | `src/index.ts` | `POST /webhooks/telegram` | Con el chat id, forjar pulsaciones de "aprobar": publica lo que haya en cola, **también en @icosaedro_one** (el binding no lo impide, ver §2) | Publicar en X |

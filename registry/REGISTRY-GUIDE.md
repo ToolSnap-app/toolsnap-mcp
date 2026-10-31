@@ -47,30 +47,11 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=app.toolsnap/
 
 ---
 
-## 2. Smithery — PRIORIDAD ALTA
-Tráfico alto, usado por Claude Desktop y Cursor.
-
-**URL:** https://smithery.ai/new
-
-**Pasos (web form):**
-1. Ir a https://smithery.ai/new
-2. Pegar la URL: `https://mcp.toolsnap.app/mcp`
-3. Smithery escanea el servidor automáticamente
-4. Completar el formulario:
-   - Name: `ToolSnap MCP`
-   - Description: *(ver abajo)*
-   - Category: Developer Tools / Paid
-
-**Descripción para Smithery (≤280 chars):**
-```
-Context-efficient MCP microtools. fetch_extract: median 98.1% token reduction (53,820→2,001 tokens). Saves $0.156/call vs raw HTML. $0.02 USDC on Base via x402. First call free. 10 free tools included.
-```
-
-**Alternativa CLI:**
-```bash
-npm install -g @smithery/cli
-smithery mcp publish "https://mcp.toolsnap.app/mcp" -n icosaedro/toolsnap-mcp
-```
+## 2. Smithery — cerrado como plataforma (2026-10-31)
+Smithery apagó su MCP Proxy (run.tools, server.smithery.ai), su API, sus cuentas y su CLI el 2026-10-31
+(https://smithery.ai/future). smithery.ai sigue como registro público, sin proxy, mantenido por Arcade.dev;
+ya no se puede dar de alta ni editar fichas. Nuestra ficha (`icosaedro/toolsnap-mcp`) se quedó anunciando
+el endpoint de run.tools; para corregirla, escribir a ani@smithery.ai pidiendo `https://mcp.toolsnap.app/mcp`.
 
 ---
 
@@ -133,8 +114,7 @@ No requiere acción.
 |------|--------|---------|
 | 1 | Desplegar `mcp-registry-auth` en `toolsnap.app/.well-known/` | Usuario (utility_websites) |
 | 2 | `mcp-publisher publish` con `server.json` | Usuario (CLI, 5 min) |
-| 3 | Smithery web form en smithery.ai/new | Usuario (3 min) |
-| 4 | PR a awesome-x402 | Usuario (2 min) |
+| 3 | PR a awesome-x402 | Usuario (2 min) |
 
-Con estos 4 pasos el servidor aparece en: Official Registry, PulseMCP (auto), Smithery.
+Con estos 3 pasos el servidor aparece en: Official Registry y PulseMCP (auto).
 Glama y mcp.directory quedan para cuando el repo sea público.

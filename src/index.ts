@@ -117,11 +117,9 @@ export interface Env {
   VIGIA_ACCOUNT_ID?: string;
   VIGIA_WORKERS?: string;
 
-  // Fase 25.3 — directory-listing API keys (set via: wrangler secret put
-  // SMITHERY_API_KEY / GLAMA_API_KEY). Both optional — analytics/directory-
-  // stats.ts degrades to unauthenticated fetches (their public endpoints)
-  // when either is missing; only affects rate limits.
-  SMITHERY_API_KEY?: string;
+  // Fase 25.3 — directory-listing API key (set via: wrangler secret put
+  // GLAMA_API_KEY). Optional — analytics/directory-stats.ts sends it only when
+  // present; Glama's API answers 401 without it since 2026-10.
   GLAMA_API_KEY?: string;
 
   // DataForSEO credentials for keyword_research (set via: wrangler secret put DATAFORSEO_LOGIN/PASSWORD).
@@ -1445,7 +1443,7 @@ const handler = {
     // Fase 22.3 — daily engagement metrics fetch (x_metrics), piggybacking on
     // this existing daily trigger rather than adding a third Cron Trigger.
     ctx.waitUntil(runTask("x-agent-metrics", fetchXMetrics(env)));
-    // Fase 25.3 — daily directory-listing snapshot (Smithery useCount, Glama
+    // Fase 25.3 — daily directory-listing snapshot (Glama
     // listing), same piggyback pattern as the metrics fetch above.
     ctx.waitUntil(runTask("directory-stats", snapshotDirectoryStats(env)));
     // Fase B2 — resumen diario de las series del panel (hoy y ayer, UTC).

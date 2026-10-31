@@ -3,7 +3,7 @@
 // y retira esta linea de import al ensamblar (test/analytics-panel.ts lo comprueba).
 import {
   PAGE_SIZES, fmt, fmtUsd, fmtPct, fmtMs, esc, timeLabel, truncatePayer, tfLabel, winKey, winLabel,
-  seriesForTimeframe, smitheryDelta, niceMax, formatXLabel, formatFullDate, paginate, paywallRate,
+  seriesForTimeframe, niceMax, formatXLabel, formatFullDate, paginate, paywallRate,
   groupSurface, cogsSummary, partialLabel, funnelRows, healthSummary, retentionParts, sanitizeState, classifyDataResponse,
 } from './panel-lib.js';
 
@@ -447,12 +447,10 @@ function renderDirectory(d) {
 function renderListings(d) {
   const stats = d.directory_stats || [];
   if (stats.length === 0) return setEmpty('listings', 'no directory snapshots yet');
-  const delta = smitheryDelta(d.smithery_use_count_series);
   const rows = stats.map((r) => {
-    const dl = r.source === 'smithery' && delta ? ' <span class="delta ' + (delta.up ? 'up' : 'down') + '">' + deltaHtml(delta) + '</span>' : '';
-    return '<tr><td class="mono">' + esc(r.source) + '</td><td class="num">' + (r.use_count !== null && r.use_count !== undefined ? fmt(r.use_count, 0) + dl : '<span class="dim">listed</span>') + '</td><td class="mono dim">' + timeLabel(r.ts) + '</td></tr>';
+    return '<tr><td class="mono">' + esc(r.source) + '</td><td class="num">' + (r.use_count !== null && r.use_count !== undefined ? fmt(r.use_count, 0) : '<span class="dim">listed</span>') + '</td><td class="mono dim">' + timeLabel(r.ts) + '</td></tr>';
   }).join('');
-  setPanel('listings', table([{ label: 'Source' }, { label: 'useCount · 7d change', num: true }, { label: 'Last snapshot (UTC)' }], rows));
+  setPanel('listings', table([{ label: 'Source' }, { label: 'useCount', num: true }, { label: 'Last snapshot (UTC)' }], rows));
 }
 
 function renderFailures(d) {

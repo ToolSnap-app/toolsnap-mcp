@@ -91,7 +91,7 @@
           "tools_path": "description",
           "fields": { "listedTools": "tools.length", "deploymentUrl": "deploymentUrl", "security": "security" },
           "warn_if_contains": { "deploymentUrl": "run.tools" },
-          "warn_note": "el MCP Proxy de Smithery (run.tools) cierra el 2026-10-31"
+          "warn_note": "run.tools murió con el cierre de Smithery (2026-10-31); la ficha debe anunciar https://mcp.toolsnap.app/mcp (pedirlo a ani@smithery.ai)"
         },
         {
           "type": "page",

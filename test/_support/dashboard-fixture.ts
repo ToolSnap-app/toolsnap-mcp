@@ -329,10 +329,8 @@ export function buildDashboardFixture(now = Date.now(), opts: FixtureOptions = {
     latency_by_tool: d30.latency_by_tool,
     directory_coverage: scenario === "empty" ? [] : connects.filter((c) => c.probe).map((c) => ({ client: c.client, hits: c.connects, last_seen: now - 3600000 * (1 + connects.indexOf(c)) })),
     directory_stats: scenario === "empty" ? [] : [
-      { source: "smithery", use_count: 1284, ts: now - 5 * 3600000 },
       { source: "glama", use_count: null, ts: now - 5 * 3600000 },
     ],
-    smithery_use_count_series: scenario === "empty" ? [] : Array.from({ length: 14 }, (_, i) => ({ day: dayKey(now - (13 - i) * DAY), use_count: 1120 + i * 12 })),
     paywall_funnel: d30.paywall_funnel,
     surface: {
       connects_by_client: connects,

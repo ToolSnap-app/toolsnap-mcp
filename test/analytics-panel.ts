@@ -20,7 +20,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
-  fmt, fmtUsd, fmtPct, zeroFillDaily, bucketWeekly, zeroFillIntraday, bucketIntraday, windowDelta, smitheryDelta,
+  fmt, fmtUsd, fmtPct, zeroFillDaily, bucketWeekly, zeroFillIntraday, bucketIntraday, windowDelta,
   paginate, paywallRate, cogsSummary, groupSurface, healthSummary, retentionParts, sanitizeState, seriesForTimeframe,
   niceMax, formatXLabel, partialLabel, truncatePayer, timeLabel, winKey, classifyDataResponse,
 } from "../src/analytics/panel/panel-lib.js";
@@ -91,7 +91,6 @@ assert("partialLabel: dia, semana y punto completo", partialLabel({ partial: tru
 const intra = zeroFillIntraday([{ ts: Math.floor(NOW / 1800000) * 1800000, calls: 3 }], "calls", 2, 1800000, NOW);
 assert("zeroFillIntraday: 2 h en medias horas, la ultima es ahora", intra.length === 4 && intra[3].value === 3 && intra[0].value === 0);
 assert("bucketIntraday agrupa por factor", eq(bucketIntraday(intra, 2).map((x) => x.value), [0, 3]));
-assert("smitheryDelta ~7 muestras atras", eq(smitheryDelta(Array.from({ length: 10 }, (_, i) => ({ use_count: 100 + i * 10 }))), { pct: 58, up: true }));
 assert("niceMax redondea arriba a 1/2/5", niceMax(37) === 50 && niceMax(120) === 200 && niceMax(0) === 1 && niceMax(7) === 10);
 assert("formatXLabel", formatXLabel("2026-10-19", "day") === "19 Oct" && formatXLabel("2026-10-19", "week") === "Oct" && formatXLabel("2026-10-19T08:30:00.000Z", "intraday") === "08:30");
 

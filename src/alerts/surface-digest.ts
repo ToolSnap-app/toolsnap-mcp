@@ -59,8 +59,7 @@ export async function checkSurfaceDigest(env: Env, now: Date = new Date()): Prom
   const paywallPct = pf.hit_payers > 0 ? Math.round((pf.converted_payers / pf.hit_payers) * 100) : 0;
 
   // Fase 25.3 — directory-listing stats: useCount + week-over-week delta
-  // where the source exposes one (Smithery), presence-only otherwise
-  // (Glama), plus a drift warning when a listing description changed since
+  // where the source exposes one, presence-only otherwise (Glama), plus a drift warning when a listing description changed since
   // the last daily snapshot — descriptions are hand-edited on each
   // directory's site, so a silent change is worth a look.
   const directoryLines = d.directory_stats.length

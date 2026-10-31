@@ -172,17 +172,6 @@ export function windowDelta(dailyArr, days) {
   return { pct: Math.round(((curSum - prevSum) / prevSum) * 100), up: curSum >= prevSum, through: complete[n - 1].day };
 }
 
-/** Delta semanal aproximado de un contador acumulado muestreado ~1/dia (Smithery useCount). */
-export function smitheryDelta(series) {
-  if (!series || series.length < 2) return null;
-  const current = series[series.length - 1].use_count;
-  const idx = Math.max(0, series.length - 8);
-  if (idx === series.length - 1) return null;
-  const past = series[idx].use_count;
-  if (!past) return null;
-  return { pct: Math.round(((current - past) / past) * 100), up: current >= past };
-}
-
 /** Lo que pinta el chart de cada timeframe: serie, granularidad, suma de la ventana y delta. */
 export function seriesForTimeframe(d, days, granularity, now = Date.now()) {
   if (days === 1) {

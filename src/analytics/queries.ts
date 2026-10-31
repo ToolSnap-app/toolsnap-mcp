@@ -286,14 +286,12 @@ export interface DashboardData {
    */
   directory_coverage: Array<{ client: string; hits: number; last_seen: number }>;
   /**
-   * Fase 25.3 — external directory-listing stats (Smithery useCount, Glama
-   * listing presence), snapshotted daily by the scheduled cron
+   * Fase 25.3 — external directory-listing stats (Glama listing presence),
+   * snapshotted daily by the scheduled cron
    * (analytics/directory-stats.ts) since this table only holds ToolSnap's
    * own scheduled rows — not caller traffic, so it's outside internalFilter.
    */
   directory_stats: Array<{ source: string; use_count: number | null; ts: number }>;
-  /** Fase 25.3 — Smithery useCount over the last 30 days, one point per snapshot day, for the panel chart. */
-  smithery_use_count_series: Array<{ day: string; use_count: number }>;
   /**
    * Fase 24.6 — how many distinct payers hit the x402 paywall (402_rejected)
    * and, within 7 days after their first hit, converted (called
@@ -772,7 +770,6 @@ async function computeDashboardData(
     revenueByClient,
     sessionRows,
     directoryStatsLatest,
-    smitheryUseCountSeries,
     paywallFunnels,
     oldestEvent,
     lastEvent,
@@ -1064,25 +1061,18 @@ async function computeDashboardData(
 
       // Fase 25.3 — most recent snapshot per directory source (independent of
       // internalFilter/probe exclusion: this table only ever holds our own
-      // scheduled snapshots, never caller-driven rows).
+      // scheduled snapshots, never caller-driven rows). Only sources snapshotted
+      // in the last 30 days, so a retired one (Smithery, 2026-10-31) drops off
+      // instead of showing its last figure forever.
       db
         .prepare(
           `SELECT source, use_count, MAX(ts) AS ts
            FROM directory_stats
+           WHERE ts >= ?
            GROUP BY source`
         )
-        .all<{ source: string; use_count: number | null; ts: number }>(),
-
-      // Fase 25.3 — Smithery useCount series, last 30 days, for the panel chart.
-      db
-        .prepare(
-          `SELECT ts, use_count
-           FROM directory_stats
-           WHERE source = 'smithery' AND ts >= ? AND use_count IS NOT NULL
-           ORDER BY ts ASC`
-        )
         .bind(since30)
-        .all<{ ts: number; use_count: number }>(),
+        .all<{ source: string; use_count: number | null; ts: number }>(),
 
       paywallFunnelByWindow(db, since30, [since30, since7, since1], internalFilter),
 
@@ -1225,10 +1215,6 @@ async function computeDashboardData(
     latency_by_tool: d30.latency_by_tool,
     directory_coverage: connectStats.directory_coverage,
     directory_stats: directoryStatsLatest.results ?? [],
-    smithery_use_count_series: (smitheryUseCountSeries.results ?? []).map((r) => ({
-      day: dayLabel(r.ts),
-      use_count: r.use_count,
-    })),
     paywall_funnel: d30.paywall_funnel,
     surface: {
       connects_by_client: connectStats.connects_by_client,

@@ -32,6 +32,15 @@ const GRACE_MS = 3 * 60 * 1000;
 const MAX_ALERTS_PER_WORKER = 5;
 /** Un aviso que lleva tanto sin poder enviarse deja de reintentarse en silencio: se lanza para que runTask lo pagine. */
 const UNDELIVERABLE_MS = 60 * 60 * 1000;
+/**
+ * Un 5xx de la API de Cloudflare no es accionable (alerta del 2026-10-31: un
+ * 500 suelto sono en Telegram y la pasada siguiente ya iba bien). Se reintenta
+ * una vez y, si sigue, solo se pagina cuando lleva caido mas de esto: un
+ * vigia ciego durante horas si merece aviso. Un 4xx (token revocado, Worker
+ * renombrado) sigue avisando a la primera.
+ */
+const TRANSIENT_GRACE_MS = 30 * 60 * 1000;
+const RETRY_DELAY_MS = 1000;
 
 export interface DeploymentVersion {
   version_id: string;
@@ -51,6 +60,10 @@ export type Verdict = "baseline" | "unchanged" | "expected" | "unexpected" | "pe
 
 export const seenKey = (worker: string): string => `ultimo-visto:${worker}`;
 export const expectedKey = (worker: string, deploymentId: string): string => `esperado:${worker}:dep:${deploymentId}`;
+export const failingSinceKey = (worker: string): string => `vigia-5xx-desde:${worker}`;
+
+/** 5xx o fallo de red de la API de Cloudflare, ya reintentado. */
+export class TransientApiError extends Error {}
 
 /**
  * Decide que hacer con un deployment dado el ultimo visto. Pura: la parte con
@@ -92,12 +105,43 @@ export function newerThan(deployments: Deployment[], lastSeenId: string | null):
 }
 
 async function fetchDeployments(accountId: string, worker: string, token: string): Promise<Deployment[]> {
-  const res = await fetch(`${API}/accounts/${accountId}/workers/scripts/${encodeURIComponent(worker)}/deployments`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`deployments ${worker}: HTTP ${res.status}`);
-  const body = (await res.json()) as { result?: { deployments?: Deployment[] } };
-  return body.result?.deployments ?? [];
+  const url = `${API}/accounts/${accountId}/workers/scripts/${encodeURIComponent(worker)}/deployments`;
+  let transient = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    let res: Response;
+    try {
+      res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    } catch (err) {
+      transient = `deployments ${worker}: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+    if (res.status >= 500) {
+      transient = `deployments ${worker}: HTTP ${res.status}`;
+      continue;
+    }
+    if (!res.ok) throw new Error(`deployments ${worker}: HTTP ${res.status}`);
+    const body = (await res.json()) as { result?: { deployments?: Deployment[] } };
+    return body.result?.deployments ?? [];
+  }
+  throw new TransientApiError(transient);
+}
+
+/**
+ * Un 5xx persistente: true si ya lleva mas de TRANSIENT_GRACE_MS (hay que
+ * paginar). Marca el inicio con un solo put por incidente. Si el KV falla se
+ * pagina: sin poder contar el tiempo, mejor un aviso de mas que un vigia ciego
+ * en silencio.
+ */
+async function transientExpired(kv: KVNamespace, worker: string, now: number): Promise<boolean> {
+  try {
+    const since = Number(await kv.get(failingSinceKey(worker)));
+    if (since > 0) return now - since > TRANSIENT_GRACE_MS;
+    await kv.put(failingSinceKey(worker), String(now), { expirationTtl: 7 * 24 * 60 * 60 });
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -133,8 +177,9 @@ export function formatAlert(worker: string, d: Deployment, more = 0): string {
 
 /**
  * Una pasada de vigilancia. Sin VIGIA_CF_TOKEN no hace nada (se puede
- * desplegar antes de poner el secret). Un fallo de la API lanza para que
- * runTask lo pagine como cualquier cron roto; un KV roto nunca provoca falsas
+ * desplegar antes de poner el secret). Un 4xx de la API lanza para que
+ * runTask lo pagine como cualquier cron roto; un 5xx solo si dura mas de
+ * TRANSIENT_GRACE_MS; un KV roto nunca provoca falsas
  * alertas: sin leer el estado no se decide nada.
  */
 export async function checkDeployWatch(env: Env, now = Date.now()): Promise<void> {
@@ -150,7 +195,16 @@ export async function checkDeployWatch(env: Env, now = Date.now()): Promise<void
   const failures: string[] = [];
   for (const worker of workers) {
     try {
-      const deployments = await fetchDeployments(accountId, worker, token);
+      let deployments: Deployment[];
+      try {
+        deployments = await fetchDeployments(accountId, worker, token);
+      } catch (err) {
+        if (!(err instanceof TransientApiError) || (await transientExpired(kv, worker, now))) throw err;
+        console.warn(`deploy-watch: ${err.message}, se reintenta en la siguiente pasada`);
+        continue;
+      }
+      // La API ha vuelto: se cierra el incidente de 5xx si lo habia.
+      if ((await kv.get(failingSinceKey(worker))) !== null) await kv.delete(failingSinceKey(worker));
       if (deployments.length === 0) continue;
       const latest = deployments[0]!;
       const lastSeen = await kv.get(seenKey(worker));

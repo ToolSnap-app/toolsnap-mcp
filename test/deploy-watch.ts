@@ -23,6 +23,7 @@
 import {
   checkDeployWatch,
   expectedKey,
+  failingSinceKey,
   formatAlert,
   judgeDeployment,
   newerThan,
@@ -75,6 +76,9 @@ class FakeKv {
     this.puts.push(key);
     this.store.set(key, value);
   }
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
 }
 
 const SECRET = "vigia-secret-token-value";
@@ -90,6 +94,9 @@ async function pass(opts: {
   telegramOk?: boolean;
   workers?: string;
   token?: string | undefined;
+  /** Status codes the deployments API answers with, one per call, before the real list. */
+  apiErrors?: number[];
+  now?: number;
 }): Promise<{ alerts: string[]; apiAuth: string[] }> {
   const alerts: string[] = [];
   const apiAuth: string[] = [];
@@ -104,6 +111,8 @@ async function pass(opts: {
     const m = url.match(/\/workers\/scripts\/([^/]+)\/deployments$/);
     if (m) {
       apiAuth.push(String((init?.headers as Record<string, string>)?.Authorization));
+      const status = opts.apiErrors?.shift();
+      if (status !== undefined) return new Response("{}", { status });
       const list = opts.deployments[decodeURIComponent(m[1]!)];
       if (!list) return new Response("{}", { status: 404 });
       return new Response(JSON.stringify({ success: true, result: { deployments: list } }), { status: 200 });
@@ -118,7 +127,7 @@ async function pass(opts: {
     TELEGRAM_BOT_TOKEN: "tg-token",
     TELEGRAM_CHAT_ID: "42",
   } as unknown as Env;
-  await checkDeployWatch(env, NOW);
+  await checkDeployWatch(env, opts.now ?? NOW);
   return { alerts, apiAuth };
 }
 
@@ -360,6 +369,59 @@ async function run(): Promise<void> {
     assert("API failure on one Worker is reported by throwing", threw.includes("missing-worker"), threw);
     assert("the failure message carries no secret", !threw.includes(SECRET));
     assert("seen of the healthy Worker still updated", kv.store.get(seenKey("toolsnap-portal")) === "p2");
+  }
+
+  // ── Cloudflare API 5xx: retried, and only pages if it lasts (alert of 2026-10-31) ──
+  {
+    const kv = new FakeKv();
+    kv.store.set(seenKey("toolsnap-mcp"), "d1");
+    const list = { "toolsnap-mcp": [dep("d2", "v2"), dep("d1", "v1")] };
+    const one = await pass({ kv, apiErrors: [500], deployments: list });
+    assert("a single 500 is retried within the pass", one.apiAuth.length === 2);
+    assert("…and the retry still alerts on the unexpected deployment", one.alerts.length === 1);
+    assert("…without opening a 5xx incident", !kv.store.has(failingSinceKey("toolsnap-mcp")));
+
+    const kv2 = new FakeKv();
+    kv2.store.set(seenKey("toolsnap-mcp"), "d1");
+    let threw = "";
+    try {
+      await pass({ kv: kv2, apiErrors: [500, 502], deployments: list });
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert("5xx after the retry does not page at first", threw === "", threw);
+    assert("…but opens an incident with its start time", kv2.store.get(failingSinceKey("toolsnap-mcp")) === String(NOW));
+    assert("…and leaves seen untouched", kv2.store.get(seenKey("toolsnap-mcp")) === "d1");
+
+    threw = "";
+    try {
+      await pass({ kv: kv2, apiErrors: [500, 500], deployments: list, now: NOW + 20 * 60 * 1000 });
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert("5xx for 20 min: still silent", threw === "", threw);
+
+    threw = "";
+    try {
+      await pass({ kv: kv2, apiErrors: [503, 503], deployments: list, now: NOW + 31 * 60 * 1000 });
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert("5xx for over 30 min: throws so runTask pages it", threw.includes("HTTP 503"), threw);
+
+    const back = await pass({ kv: kv2, deployments: list, now: NOW + 35 * 60 * 1000 });
+    assert("API back: incident closed", !kv2.store.has(failingSinceKey("toolsnap-mcp")));
+    assert("…and the missed deployment is caught up", back.alerts.length === 1);
+
+    const kv3 = new FakeKv();
+    kv3.store.set(seenKey("toolsnap-mcp"), "d1");
+    threw = "";
+    try {
+      await pass({ kv: kv3, apiErrors: [401], deployments: list });
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert("401 (revoked token) pages at once", threw.includes("HTTP 401"), threw);
   }
 
   // ── no token → no-op ──

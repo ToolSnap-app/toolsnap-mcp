@@ -47,7 +47,7 @@ interface Listing {
 }
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const VAULT = process.env.TOOLSNAP_VAULT ?? "/Volumes/SSD Música/CODING AREA/unai-brain/mcp.toolsnap.app";
+const VAULT = process.env.TOOLSNAP_VAULT ?? "/Users/unairodriguez/coding_area/unai-brain/mcp.toolsnap.app";
 const MCP = "https://mcp.toolsnap.app/mcp";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36";
 

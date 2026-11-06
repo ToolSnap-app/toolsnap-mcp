@@ -4,6 +4,7 @@
 # server or the site's static assets, and deploying it independently keeps
 # its (very rare) redeploys from ever touching the production MCP.
 name = "cms-auth-toolsnap"
+account_id = "561a4c3a5324b4554556517bd1929bc1"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 

@@ -17,6 +17,7 @@
     "wrangler": "^4.151.3"
   },
   "dependencies": {
+    "@paxiom/receipts": "^0.2.1",
     "viem": "^2.57.7"
   }
 }

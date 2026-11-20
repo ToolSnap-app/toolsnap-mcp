@@ -1,5 +1,5 @@
 import type { McpTool } from "../mcp/types.js";
-import { safeFetch, httpStatusError } from "./safe-fetch.js";
+import { safeFetch, httpStatusError, httpUrlArgError } from "./safe-fetch.js";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_URLS = 1000;
@@ -130,10 +130,9 @@ export const sitemapParseTool: McpTool = {
     required: ["url"],
   },
   async run(args) {
-    const url = args.url as string;
-    if (!url) throw new Error("`url` is required.");
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      throw new Error("`url` must start with http:// or https://");
+    const url = args.url;
+    if (typeof url !== "string" || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+      throw httpUrlArgError(url);
     }
 
     const rawMax = args.maxUrls !== undefined ? Number(args.maxUrls) : 100;

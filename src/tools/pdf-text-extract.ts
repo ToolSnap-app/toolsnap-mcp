@@ -1,5 +1,5 @@
 import type { McpTool } from "../mcp/types.js";
-import { safeFetch, httpStatusError, parseForwardHeaders, HEADERS_SCHEMA_PROPERTY, type FilesEnv } from "./safe-fetch.js";
+import { safeFetch, httpStatusError, parseForwardHeaders, HEADERS_SCHEMA_PROPERTY, type FilesEnv, httpUrlArgError } from "./safe-fetch.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_PDF_BYTES = 20_000_000; // 20 MB — URL fetch cap
@@ -763,7 +763,7 @@ export const pdfTextExtractTool: McpTool = {
     } else {
       const url = args.url as string;
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        throw new Error("`url` must start with http:// or https://");
+        throw httpUrlArgError(url);
       }
       const forwardHeaders = parseForwardHeaders(args.headers);
 

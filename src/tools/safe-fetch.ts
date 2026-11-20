@@ -150,6 +150,13 @@ export function httpStatusError(response: { status: number; statusText: string }
  * four tools reject earlier, on their own, and so kept the bare message: a
  * real caller hit it 6 times on 2026-07-26 and never got the explanation.
  * One message, one place, so they can't drift again.
+ *
+ * Fase 25.22 — they had drifted anyway: eight more tools (fetch_metadata,
+ * page_links, page_assets, rss_parse, sitemap_parse, pdf_text_extract,
+ * html_table_extract, html_to_markdown) still threw the bare "must start with
+ * http://" and, in five of them, a non-string `url` was a TypeError that
+ * classified as OUR error. Every tool that takes a `url` argument now throws
+ * this one.
  */
 export function httpUrlArgError(raw: unknown, field = "url"): Error {
   const base = `\`${field}\` must be a string starting with http:// or https://`;

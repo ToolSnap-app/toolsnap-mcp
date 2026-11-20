@@ -308,7 +308,7 @@ export function healthSummary(h, now = Date.now()) {
   const problems = [];
   const notes = [];
   (h.broken_tools || []).forEach((b) => {
-    const line = 'tool failing for everyone: ' + b.tool + ' · ' + b.errors + '/' + b.total + ' real calls failed in 6h (' + b.pct + '%)' + (b.topDetail ? ' · ' + b.topDetail : '');
+    const line = 'tool failing for everyone: ' + b.tool + ' · ' + b.errors + '/' + b.total + ' real calls failed in 6h (' + b.pct + '%)' + (b.agents && b.agents.length ? ' · by ' + b.agents.slice(0, 5).join(', ') + (b.agents.length > 5 ? ' +' + (b.agents.length - 5) : '') : '') + (b.topDetail ? ' · ' + b.topDetail : '');
     // Fase 25.19 — el cron no pagina si los errores son del llamante/destino y el canario llega.
     if (b.paged === false) notes.push(line + ' · canary fetch OK' + (h.canary && h.canary.detail ? ' (' + h.canary.detail + ')' : '') + ': caller URLs, not paged');
     else problems.push(line + (h.canary && !h.canary.ok ? ' · canary fetch failing too: ' + h.canary.detail : ''));

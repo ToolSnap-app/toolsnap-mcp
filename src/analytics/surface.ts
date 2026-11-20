@@ -212,6 +212,10 @@ export const PROBE_CLIENTS: ReadonlySet<string> = new Set([
   // de la cuota de KV agotada en 25.14. Su hermano FixterBot ya caia por la
   // convencion "(+http" del UA; este se identifica solo por nombre.
   "fixter-monitoring",
+  // Fase 25.22 (2026-11-20). `recon-mcp/1.0` se presenta como "recon":
+  // reconocimiento del catalogo, con una tool inventada (`__nonexistent_tool__`)
+  // incluida. Uno de los cuatro "agentes" de la falsa alarma de ese dia.
+  "recon",
 ]);
 
 /**
@@ -230,6 +234,9 @@ export const PROBE_NAME_PATTERNS: readonly string[] = [
   "%-audit",
   "%spider%",
   "%verifier%",
+  // Fase 25.22 — x402scan (explorador del ecosistema x402) numera sus workers:
+  // "x402scan-worker4". Anclado al principio, no un '%scan%' suelto.
+  "x402scan%",
 ];
 
 /**
@@ -244,7 +251,16 @@ export const PROBE_NAME_PATTERNS: readonly string[] = [
  * `isProbeClient` (pager) y en `IS_PROBE_SQL` (panel) para que los dos sigan
  * contando lo mismo.
  */
-export const PROBE_UA_PATTERNS: readonly string[] = ["%(+http%"];
+export const PROBE_UA_PATTERNS: readonly string[] = [
+  "%(+http%",
+  // Fase 25.22 — dos escaneres que cambian de client_name entre llamadas pero
+  // no de User-Agent: "x402scan-worker4/1 (research; read-only)" llega tambien
+  // como `worker4-tools`, y "recon-mcp/1.0" como `recon`. El panel (SQL) solo
+  // mira los patrones de nombre en `client_name`, asi que el UA va aqui para
+  // que panel y pager cuenten lo mismo.
+  "x402scan%",
+  "recon-mcp/%",
+];
 
 /**
  * Fase 25.4 — the TypeScript twin of `IS_PROBE_SQL` (queries.ts), for callers

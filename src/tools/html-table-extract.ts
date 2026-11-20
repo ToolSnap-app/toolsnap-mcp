@@ -1,5 +1,5 @@
 import type { McpTool } from "../mcp/types.js";
-import { safeFetch, httpStatusError } from "./safe-fetch.js";
+import { safeFetch, httpStatusError, httpUrlArgError } from "./safe-fetch.js";
 
 /**
  * html_table_extract (Fase 18.1) — <table> → JSON/CSV.
@@ -205,7 +205,7 @@ export const htmlTableExtractTool: McpTool = {
     if (hasUrl) {
       const url = args.url as string;
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        throw new Error("`url` must start with http:// or https://");
+        throw httpUrlArgError(url);
       }
       rawHtml = await fetchHtmlLimited(url);
     } else {

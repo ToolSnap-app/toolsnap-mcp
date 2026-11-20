@@ -24,7 +24,15 @@
 import { isProbeClient } from "../src/analytics/surface.js";
 import { isUpstreamError, classifyToolError } from "../src/alerts/error-classification.js";
 import { maybeAlertError, maybeAlertBusinessSignal } from "../src/alerts/error-alerts.js";
-import { findBrokenTools, canaryDecides, runFetchCanary, type WindowRow } from "../src/alerts/health.js";
+import { findBrokenTools, formatAgents, canaryDecides, runFetchCanary, type WindowRow } from "../src/alerts/health.js";
+import { webpageMetadataTool } from "../src/tools/webpage-metadata.js";
+import { pageLinksTool } from "../src/tools/page-links.js";
+import { pageAssetsTool } from "../src/tools/page-assets.js";
+import { rssParseTool } from "../src/tools/rss-parse.js";
+import { sitemapParseTool } from "../src/tools/sitemap-parse.js";
+import { pdfTextExtractTool } from "../src/tools/pdf-text-extract.js";
+import { htmlTableExtractTool } from "../src/tools/html-table-extract.js";
+import { htmlToMarkdownTool } from "../src/tools/html-to-markdown.js";
 import { httpStatusError } from "../src/tools/safe-fetch.js";
 import { redactDetail } from "../src/analytics/redact.js";
 
@@ -893,6 +901,185 @@ console.log("\nredactDetail");
     drifted === 0,
     `${drifted} casos derivan`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Fase 25.22 — el barrido a ciegas. Reproduce la falsa alarma doble del
+// 2026-11-20 (fetch_metadata y fetch_extract, 5/5, "4 agentes", clase caller):
+// dos curl a mano sin argumentos, recon-mcp y x402scan recorriendo el catalogo.
+// ---------------------------------------------------------------------------
+console.log("\nbarrido a ciegas (Fase 25.22)");
+{
+  const NOTHING = "`url` must be a string starting with http:// or https://. Received nothing.";
+  const BARE = "`url` must be a string starting with http:// or [url] Try [redacted].";
+  const err = (tool_name: string, detail: string, who: Partial<WindowRow>): WindowRow => ({
+    tool_name,
+    payment_type: "tool_error",
+    detail,
+    client_name: null,
+    client: null,
+    payer: null,
+    ...who,
+  });
+  const ok = (tool_name: string, who: Partial<WindowRow>): WindowRow => ({
+    tool_name,
+    payment_type: "free_tool",
+    detail: null,
+    client_name: null,
+    client: null,
+    payer: null,
+    ...who,
+  });
+
+  // --- Primero, lo que la regla NO debe silenciar --------------------------
+  const lector = (i: number): Partial<WindowRow> => ({
+    payer: `anon:l${i}`,
+    client_name: `agente-${i}`,
+    client: `agente-${i}/1.0`,
+  });
+  const confused = findBrokenTools(Array.from({ length: 6 }, (_, i) => err("fetch_metadata", BARE, lector(i))));
+  assert(
+    "seis agentes que fallan SOLO esta tool siguen siendo 'el esquema confunde'",
+    confused.length === 1 && confused[0].kinds === "caller" && confused[0].payers === 6,
+    JSON.stringify(confused)
+  );
+  assert(
+    "la alerta nombra a los agentes",
+    confused[0]?.agents.join(",") === "agente-0,agente-1,agente-2,agente-3,agente-4,agente-5",
+    JSON.stringify(confused[0]?.agents)
+  );
+  assert("…y resume a partir del quinto", formatAgents(confused[0]?.agents ?? []) === "agente-0, agente-1, agente-2, agente-3, agente-4 +1", formatAgents(confused[0]?.agents ?? []));
+
+  const twoTools = findBrokenTools(
+    Array.from({ length: 6 }, (_, i) => [err("fetch_metadata", BARE, lector(i)), err("fetch_extract", BARE, lector(i))]).flat()
+  );
+  assert(
+    "equivocarse en dos tools no es un barrido: las dos siguen marcadas",
+    twoTools.length === 2,
+    JSON.stringify(twoTools)
+  );
+
+  const barredor = (i: number): Partial<WindowRow> => ({
+    payer: `anon:b${i}`,
+    client_name: `barredor-${i}`,
+    client: `barredor-${i}/1.0`,
+  });
+  const sweepRows = (i: number): WindowRow[] =>
+    ["fetch_metadata", "fetch_extract", "fetch_html", "csv_query"].map((t) => err(t, NOTHING, barredor(i)));
+  const internal = findBrokenTools([
+    ...sweepRows(0),
+    ...sweepRows(1),
+    ...Array.from({ length: 5 }, (_, i) => err("fetch_metadata", "boom", barredor(i % 2))),
+  ]);
+  assert(
+    "un error interno de quien barre sigue contando y pagina",
+    internal.length === 1 && internal[0].tool === "fetch_metadata" && internal[0].kinds === "internal" && internal[0].errors === 5,
+    JSON.stringify(internal)
+  );
+
+  const upstream = findBrokenTools([
+    ...sweepRows(0),
+    ...sweepRows(1),
+    ...Array.from({ length: 6 }, (_, i) => err("rss_parse", "Fetch failed: HTTP 404 Not Found", barredor(i % 2))),
+  ]);
+  assert(
+    "sus errores del destino tampoco se apartan (los decide el canario, como antes)",
+    upstream.length === 1 && upstream[0].tool === "rss_parse" && upstream[0].kinds === "upstream",
+    JSON.stringify(upstream)
+  );
+
+  // --- La regla -------------------------------------------------------------
+  assert(
+    "seis clientes recorriendo el catalogo sin argumentos no marcan ninguna tool",
+    findBrokenTools([0, 1, 2, 3, 4, 5].flatMap(sweepRows)).length === 0,
+    JSON.stringify(findBrokenTools([0, 1, 2, 3, 4, 5].flatMap(sweepRows)))
+  );
+
+  const mixed = findBrokenTools([
+    ...[0, 1, 2, 3, 4, 5].flatMap(sweepRows),
+    ok("fetch_metadata", lector(0)),
+    err("fetch_metadata", BARE, lector(9)),
+  ]);
+  assert("con el barrido apartado quedan las llamadas de los agentes reales (1/2, sin tasa que valga)", mixed.length === 0, JSON.stringify(mixed));
+
+  // --- El incidente tal cual llego, sin apoyarse en la lista de probes ------
+  // (nombres neutros: asi se prueba la regla y no los patrones de nombre).
+  const curlA = { payer: "anon:38972ccd3187", client_name: "curl", client: "curl/8.4.0" };
+  const curlB = { payer: "anon:78158daad6a0", client_name: "curl", client: "curl/8.5.0" };
+  const scanA = { client_name: "catalog-walker", client: "catalog-walker/1 (research; read-only)" };
+  const scanB = { client_name: "walker-tools", client: "catalog-walker/1 (research; read-only)" };
+  const incident: WindowRow[] = [
+    ...[curlA, curlB].flatMap((c) => [
+      err("fetch_extract", NOTHING, c),
+      err("fetch_html", NOTHING, c),
+      err("fetch_metadata", "`url` is required.", c),
+    ]),
+    err("fetch_metadata", "`url` must start with http:// or https://", { ...scanA, payer: "anon:26d98c2a6b3a" }),
+    err("pdf_text_extract", "Provide either `url` or `data`.", { ...scanA, payer: "anon:26d98c2a6b3a" }),
+    err("json_query", "Provide either `url` or `json`.", { ...scanA, payer: "anon:ec22a653a61e" }),
+    err("rss_parse", "`url` is required.", { ...scanA, payer: "anon:ec22a653a61e" }),
+    err("sitemap_parse", "`url` is required.", { ...scanA, payer: "anon:ec22a653a61e" }),
+    err("fetch_metadata", "`url` must start with http:// or https://", { ...scanA, payer: "anon:eca3397659c8" }),
+    err("pdf_text_extract", "Provide either `url` or `data`.", { ...scanA, payer: "anon:eca3397659c8" }),
+    err("fetch_extract", BARE, { ...scanB, payer: "anon:eca3397659c8" }),
+    err("fetch_html", BARE, { ...scanB, payer: "anon:eca3397659c8" }),
+    err("csv_query", "Provide either `url` or `csv`.", { ...scanB, payer: "anon:ee15ad1e2ca4" }),
+    err("fetch_extract", BARE, { ...scanB, payer: "anon:ee15ad1e2ca4" }),
+    err("fetch_html", BARE, { ...scanB, payer: "anon:ee15ad1e2ca4" }),
+    // El tercer escaner solo toco dos tools: la regla no lo aparta…
+    err("fetch_extract", BARE, { payer: "anon:cc125fc3c5f8", client_name: "two-tool-walker", client: "two-tool-walker/1.0" }),
+    err("fetch_metadata", "`url` must start with http:// or https://", { payer: "anon:cc125fc3c5f8", client_name: "two-tool-walker", client: "two-tool-walker/1.0" }),
+  ];
+  assert(
+    "la doble alerta del 2026-11-20 no sale: quitado el barrido queda una llamada por tool",
+    findBrokenTools(incident).length === 0,
+    JSON.stringify(findBrokenTools(incident))
+  );
+
+  // --- …y los dos escaneres con nombre entran ademas en la lista de probes --
+  assert("x402scan es un probe por nombre", isProbeClient("x402scan-worker4", "x402scan-worker4/1 (research; read-only)"), "expected true");
+  assert("x402scan es un probe por UA aunque cambie de client_name", isProbeClient("worker4-tools", "x402scan-worker4/1 (research; read-only)"), "expected true");
+  assert("recon-mcp es un probe por nombre y por UA", isProbeClient("recon", "python-requests/2.34.2") && isProbeClient(null, "recon-mcp/1.0"), "expected true");
+  assert("curl a secas NO es un probe (lo usa gente de verdad)", !isProbeClient("curl", "curl/8.4.0"), "expected false");
+  assert("un nombre que solo contiene 'scan' NO es un probe", !isProbeClient("docscan-agent", "docscan-agent/2.0"), "expected false");
+}
+
+// ---------------------------------------------------------------------------
+// Fase 25.22 — las ocho tools que seguian dando el mensaje pelado ahora dan el
+// de httpUrlArgError, y un `url` que no es string deja de ser un TypeError
+// (que clasificaba como fallo NUESTRO y habria paginado).
+// ---------------------------------------------------------------------------
+console.log("\nmensaje de url unificado (Fase 25.22)");
+{
+  const message = async (run: () => Promise<unknown>): Promise<string> => {
+    try {
+      await run();
+      return "(no lanzo)";
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+  const urlOnly = [webpageMetadataTool, pageLinksTool, pageAssetsTool, rssParseTool, sitemapParseTool];
+  for (const tool of urlOnly) {
+    const none = await message(() => tool.run({}));
+    assert(`${tool.name}: sin url dice que no recibio nada`, none.endsWith("Received nothing.") && classifyToolError(none) === "caller", none);
+    const num = await message(() => tool.run({ url: 123 }));
+    assert(`${tool.name}: url numerica es error del llamante, no nuestro`, num.endsWith("Received number.") && classifyToolError(num) === "caller", num);
+    const bare = await message(() => tool.run({ url: "example.com/page" }));
+    assert(`${tool.name}: host sin esquema propone el arreglo`, bare.endsWith('Try "https://example.com/page".'), bare);
+    const local = await message(() => tool.run({ url: "/tmp/page.html" }));
+    assert(`${tool.name}: ruta local explica por que no`, local.includes("Local file paths are not supported"), local);
+  }
+  const bareHost = { url: "example.com/page" };
+  const env = {} as never;
+  for (const [name, run] of [
+    ["html_table_extract", () => htmlTableExtractTool.run(bareHost)],
+    ["html_to_markdown", () => htmlToMarkdownTool.runWithEnv!(bareHost, env)],
+    ["pdf_text_extract", () => pdfTextExtractTool.runWithEnv!(bareHost, env)],
+  ] as Array<[string, () => Promise<unknown>]>) {
+    const bare = await message(run);
+    assert(`${name}: host sin esquema propone el arreglo`, bare.endsWith('Try "https://example.com/page".') && classifyToolError(bare) === "caller", bare);
+  }
 }
 
 // ---------------------------------------------------------------------------

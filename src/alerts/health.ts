@@ -109,6 +109,68 @@ function agentKey(row: WindowRow, fallback: string): string {
 const BREAKAGE_MIN_CALLS_WITHOUT_TOP = 3;
 
 /**
+ * Fase 25.22 — el barrido a ciegas. Quinta falsa alarma de la familia, y la
+ * primera por la rama "solo errores de argumentos", la unica que el canario de
+ * 25.19 no decide (un fetch saliente no prueba nada sobre un esquema).
+ *
+ * El 2026-11-20 sonaron a la vez `fetch_metadata` y `fetch_extract`, 5/5, "4
+ * agentes", clase caller, con el texto "el esquema esta induciendo a los
+ * agentes a llamarla mal". Los cuatro eran: dos `curl` a mano desde IPs
+ * distintas que llamaron a las tres tools de fetch SIN argumentos en el mismo
+ * segundo, `recon-mcp/1.0`, y `x402scan-worker4/1 (research; read-only)`
+ * recorriendo el catalogo (fetch_*, csv_query, json_query, pdf_text_extract,
+ * rss_parse, sitemap_parse) con valores de relleno. En los 14 dias previos
+ * `fetch_extract` llevaba 913 llamadas con 6 errores de argumentos, ninguno de
+ * un agente con modelo detras. El esquema no confundia a nadie.
+ *
+ * La alerta afirma algo sobre ESTA tool: que su esquema lleva a llamarla mal.
+ * Un agente que falla los argumentos de tres tools distintas en la misma
+ * ventana no aporta prueba de eso: no esta leyendo esquemas, esta recorriendo
+ * el catalogo. Sus errores de argumentos se apartan del recuento de todas las
+ * tools; lo demas que haga (exitos, errores del destino y sobre todo errores
+ * `internal`) sigue contando igual.
+ *
+ * Lo que se pierde a sabiendas: un agente real que se equivoque en tres tools
+ * distintas en 6 h deja de contar como testigo de "esquema confuso". Uno solo
+ * nunca bastaba (hacen falta dos agentes y sobrevivir a apartar al peor), y
+ * una regresion nuestra que rompiera los argumentos de todas las tools la
+ * verian sobre todo agentes que usan una o dos, que siguen contando.
+ */
+const SWEEP_MIN_TOOLS = 3;
+
+/** Agentes (por agentKey) con errores de argumentos en SWEEP_MIN_TOOLS tools distintas o mas. */
+function blindSweepers(rows: WindowRow[]): Set<string> {
+  const toolsByAgent = new Map<string, Set<string>>();
+  for (const row of rows) {
+    // Sin payer no hay identidad con la que agrupar: nunca es un barrido.
+    if (!row.payer || row.payment_type !== "tool_error") continue;
+    if (classifyToolError(row.detail) !== "caller") continue;
+    const who = agentKey(row, "");
+    const tools = toolsByAgent.get(who) ?? new Set<string>();
+    tools.add(row.tool_name);
+    toolsByAgent.set(who, tools);
+  }
+  const sweepers = new Set<string>();
+  for (const [who, tools] of toolsByAgent) {
+    if (tools.size >= SWEEP_MIN_TOOLS) sweepers.add(who);
+  }
+  return sweepers;
+}
+
+/** Cuantos nombres de agente caben en la alerta antes de resumir con "+N". */
+const ALERT_MAX_AGENT_NAMES = 5;
+
+/**
+ * Como se nombra a un agente en la alerta. Sin los caracteres que Telegram
+ * interpreta como formato: un `_` suelto en un nombre de cliente hace que la
+ * API rechace el mensaje entero y la alerta se pierda.
+ */
+function agentLabel(row: WindowRow): string {
+  const raw = row.client_name || row.client || row.payer || "desconocido";
+  return raw.replace(/[`*_[\]]/g, " ").replace(/\s+/g, " ").trim().slice(0, 32) || "desconocido";
+}
+
+/**
  * Fase 25.19 — el canario. Cuarta falsa alarma de esta familia tras 25.10,
  * 25.11 y 25.12, y la nota de 25.12 ya decia cual era el siguiente paso: no
  * otro umbral sino comprobar directamente lo que la alerta afirma.
@@ -176,6 +238,13 @@ export async function runFetchCanary(fetchImpl: CanaryFetch = (url, init) => saf
 
 export type BrokenTool = ReturnType<typeof findBrokenTools>[number];
 
+/** La linea de nombres de la alerta: los primeros ALERT_MAX_AGENT_NAMES y cuantos quedan. */
+export function formatAgents(agents: readonly string[]): string {
+  const shown = agents.slice(0, ALERT_MAX_AGENT_NAMES).join(", ");
+  const rest = agents.length - ALERT_MAX_AGENT_NAMES;
+  return rest > 0 ? `${shown} +${rest}` : shown;
+}
+
 /** Corre el canario UNA vez y solo si alguna tool rota lo pide; null cuando ninguna. */
 export async function canaryFor(broken: ReadonlyArray<{ kinds: string }>, fetchImpl?: CanaryFetch): Promise<CanaryResult | null> {
   return broken.some((b) => canaryDecides(b.kinds)) ? runFetchCanary(fetchImpl) : null;
@@ -238,9 +307,12 @@ export function findBrokenTools(rows: WindowRow[]): Array<{
   errors: number;
   pct: number;
   payers: number;
+  /** Quienes fallaron (client_name o UA), para diagnosticar la alerta desde el movil. */
+  agents: string[];
   topDetail: string | null;
   kinds: string;
 }> {
+  const sweepers = blindSweepers(rows);
   const byTool = new Map<
     string,
     {
@@ -249,6 +321,7 @@ export function findBrokenTools(rows: WindowRow[]): Array<{
       details: Map<string, number>;
       kinds: Set<string>;
       errorPayers: Set<string>;
+      errorAgents: Set<string>;
       /** Llamadas y errores de cada agente: el reparto que pide Fase 25.11. */
       byPayer: Map<string, { calls: number; errors: number }>;
     }
@@ -258,12 +331,17 @@ export function findBrokenTools(rows: WindowRow[]): Array<{
     // Los escaneres de directorios llaman a proposito sin argumentos: incluirlos
     // haria que toda tool "de catalogo" pareciese rota permanentemente.
     if (isProbeClient(row.client_name, row.client)) continue;
+    const kind = row.payment_type === "tool_error" ? classifyToolError(row.detail) : null;
+    // Fase 25.22 — los errores de argumentos de quien recorre el catalogo a
+    // ciegas no dicen nada del esquema de esta tool (ver SWEEP_MIN_TOOLS).
+    if (kind === "caller" && row.payer && sweepers.has(agentKey(row, ""))) continue;
     const agg = byTool.get(row.tool_name) ?? {
       total: 0,
       errors: 0,
       details: new Map<string, number>(),
       kinds: new Set<string>(),
       errorPayers: new Set<string>(),
+      errorAgents: new Set<string>(),
       byPayer: new Map(),
     };
     agg.total += 1;
@@ -272,11 +350,12 @@ export function findBrokenTools(rows: WindowRow[]): Array<{
     const who = agentKey(row, `(desconocido:${agg.total})`);
     const mine = agg.byPayer.get(who) ?? { calls: 0, errors: 0 };
     mine.calls += 1;
-    if (row.payment_type === "tool_error") {
+    if (kind !== null) {
       agg.errors += 1;
       mine.errors += 1;
-      agg.kinds.add(classifyToolError(row.detail));
+      agg.kinds.add(kind);
       agg.errorPayers.add(who);
+      agg.errorAgents.add(agentLabel(row));
       const d = row.detail ?? "(sin detalle)";
       agg.details.set(d, (agg.details.get(d) ?? 0) + 1);
     }
@@ -307,6 +386,7 @@ export function findBrokenTools(rows: WindowRow[]): Array<{
       errors: agg.errors,
       pct,
       payers: agg.errorPayers.size,
+      agents: Array.from(agg.errorAgents).sort(),
       topDetail,
       kinds: Array.from(agg.kinds).sort().join("+") || "—",
     });
@@ -408,12 +488,12 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
       [
         `🔴 *tool fallando para todo el mundo* · \`${b.tool}\``,
         `${b.errors}/${b.total} llamadas reales fallidas en ${BREAKAGE_WINDOW_MS / HOUR_MS}h (*${b.pct}%*)`,
-        `agentes afectados: ${b.payers}`,
+        `agentes afectados: ${b.payers} (${formatAgents(b.agents)})`,
         `clase: ${b.kinds}`,
         b.topDetail ? `detail mas comun: ${b.topDetail}` : null,
         canary && !canary.ok ? `canario: el fetch saliente del Worker tampoco llega (${canary.detail})` : null,
         b.kinds === "caller"
-          ? `Todos son errores de argumentos: el esquema o la descripcion de la tool esta induciendo a los agentes a llamarla mal. Toca ajustar el MCP.`
+          ? `Todos son errores de argumentos y ninguno viene de un barrido del catalogo. Si los de arriba son clientes con modelo detras, el esquema los lleva a llamarla mal: toca ajustar el MCP. Si son scripts o escaneres, van a la lista de probes.`
           : null,
       ]
         .filter((l): l is string => l !== null)

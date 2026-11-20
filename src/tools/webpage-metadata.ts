@@ -1,5 +1,5 @@
 import type { McpTool } from "../mcp/types.js";
-import { safeFetch, httpStatusError, parseForwardHeaders, HEADERS_SCHEMA_PROPERTY } from "./safe-fetch.js";
+import { safeFetch, httpStatusError, parseForwardHeaders, HEADERS_SCHEMA_PROPERTY, httpUrlArgError } from "./safe-fetch.js";
 
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -126,10 +126,9 @@ export const webpageMetadataTool: McpTool = {
     required: ["url"],
   },
   async run(args) {
-    const url = args.url as string;
-    if (!url) throw new Error("`url` is required.");
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      throw new Error("`url` must start with http:// or https://");
+    const url = args.url;
+    if (typeof url !== "string" || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+      throw httpUrlArgError(url);
     }
     const forwardHeaders = parseForwardHeaders(args.headers);
 

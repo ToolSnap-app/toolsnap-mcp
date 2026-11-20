@@ -1,6 +1,6 @@
 import type { McpTool } from "../mcp/types.js";
 import type { Env } from "../index.js";
-import { safeFetch, httpStatusError, parseForwardHeaders, HEADERS_SCHEMA_PROPERTY, type FilesEnv } from "./safe-fetch.js";
+import { safeFetch, httpStatusError, parseForwardHeaders, HEADERS_SCHEMA_PROPERTY, type FilesEnv, httpUrlArgError } from "./safe-fetch.js";
 
 const DEFAULT_MAX_CHARS = 12_000;
 const HARD_MAX_CHARS = 50_000;
@@ -219,7 +219,7 @@ export const htmlToMarkdownTool: McpTool = {
     if (hasUrl) {
       const url = args.url as string;
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        throw new Error("`url` must start with http:// or https://");
+        throw httpUrlArgError(url);
       }
       rawHtml = await fetchHtml(url, parseForwardHeaders(args.headers), env as Env);
     } else {

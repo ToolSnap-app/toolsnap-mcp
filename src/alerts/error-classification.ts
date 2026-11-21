@@ -188,6 +188,22 @@ const UPSTREAM_PATTERNS: readonly RegExp[] = [
   /^CSV is empty or has no header row\.?$/,
   /^No <table> elements found\.?$/,
   /^Rendered page produced no extractable text\b/,
+  // Fase 25.24 — el recurso de la URL pesa mas de lo que esta tool procesa
+  // (csv-query.ts, json-query.ts, pdf-text-extract.ts, html-table-extract.ts).
+  // No es un argumento mal escrito: el llamante no puede saber el tamano antes
+  // de llamar, y el mensaje ya le dice a que tool pasar. Clasificado como
+  // "caller" (por el "too large" generico de CALLER_PATTERNS) hizo sonar
+  // `csv_query` 5/5 el 2026-11-21 con el texto "el esquema los lleva a
+  // llamarla mal": era un script de pruebas con un CSV de mas de 5 MB.
+  //
+  // ANCLADOS a la redaccion de la descarga por URL. Se quedan en "caller", a
+  // proposito, los limites sobre lo que el llamante escribe en el argumento:
+  // "PDF too large: N bytes (max M for inline data ...)", "Image too large",
+  // "Input too large: max N lines", "duration too large", "text too long".
+  /^CSV too large for \w+: exceeded \d+ bytes while streaming\b/,
+  /^JSON too large for \w+: \d+ bytes \(max \d+\)\./,
+  /^PDF too large: \d+ bytes \(max \d+\)\.$/,
+  /^Page too large: \d+ bytes \(max \d+\)\.$/,
   // fal/client.ts descargando el media que aporto el llamante. ANCLADO a
   // "source": "Failed to download result from fal.ai CDN" y "Failed to
   // download Microlink capture" son el proveedor fallando y siguen paginando.

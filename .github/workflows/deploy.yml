@@ -146,7 +146,16 @@ jobs:
             -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
             --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' --max-time 20 | grep -q '"tools"'
           curl -sSf https://mcp.toolsnap.app/.well-known/mcp.json --max-time 20 >/dev/null
-          echo "smoke test OK: /mcp initialize + tools/list + .well-known"
+          # Alert agent's verdict endpoint (src/alerts/agent.ts). Without a
+          # bearer it answers 401, or 404 while ALERT_AGENT_TOKEN is not set.
+          # A 405 means the asset router took it: /alerts/* fell out of
+          # run_worker_first (it shipped that way on 2026-11-21).
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST https://mcp.toolsnap.app/alerts/agent/verdict --max-time 20 || echo 000)
+          case "$code" in
+            401|404) ;;
+            *) echo "::error::POST /alerts/agent/verdict answered HTTP $code (expected 401 or 404): is /alerts/* in run_worker_first?"; exit 1 ;;
+          esac
+          echo "smoke test OK: /mcp initialize + tools/list + .well-known + /alerts/agent/verdict routed"
 
       # Fase 26 (OAuth 2.1 + DCR) — the anonymous /mcp door above must stay
       # untouched; this checks the ADDITIVE /mcp/oauth door + discovery.

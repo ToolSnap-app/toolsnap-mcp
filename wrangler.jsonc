@@ -38,6 +38,10 @@
       "/mcp/*",
       "/webhooks/*",
       "/reports/*",
+      // Alert agent (src/alerts/agent.ts): POST /alerts/agent/verdict. Unlisted,
+      // the asset router answered it with a bare 405 and the Worker never saw
+      // the verdict (first deploy of the agent, 2026-11-21).
+      "/alerts/*",
       "/upload",
       // ADR-003 — flat REST route for free tools (src/rest-tools.ts).
       "/v1/tools/*",

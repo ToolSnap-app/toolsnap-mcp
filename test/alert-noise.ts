@@ -24,7 +24,7 @@
 import { isProbeClient } from "../src/analytics/surface.js";
 import { isUpstreamError, classifyToolError } from "../src/alerts/error-classification.js";
 import { maybeAlertError, maybeAlertBusinessSignal } from "../src/alerts/error-alerts.js";
-import { findBrokenTools, formatAgents, canaryDecides, runFetchCanary, type WindowRow } from "../src/alerts/health.js";
+import { findBrokenTools, formatAgents, canaryDecides, brokenToolPages, runFetchCanary, type WindowRow } from "../src/alerts/health.js";
 import { webpageMetadataTool } from "../src/tools/webpage-metadata.js";
 import { pageLinksTool } from "../src/tools/page-links.js";
 import { pageAssetsTool } from "../src/tools/page-assets.js";
@@ -1080,6 +1080,84 @@ console.log("\nmensaje de url unificado (Fase 25.22)");
     const bare = await message(run);
     assert(`${name}: host sin esquema propone el arreglo`, bare.endsWith('Try "https://example.com/page".') && classifyToolError(bare) === "caller", bare);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fase 25.24 — un limite de tamano del recurso no es un argumento mal escrito.
+// Reproduce la alerta del 2026-11-21: csv_query 5/5, "3 agentes" (dos IPs sin
+// cliente declarado y `test`), clase caller, "el esquema los lleva a llamarla
+// mal". Era un script de pruebas con un CSV de mas de 5 MB y una cabecera
+// prohibida.
+// ---------------------------------------------------------------------------
+console.log("\nlimite de tamano del recurso (Fase 25.24)");
+{
+  const TOO_LARGE =
+    "CSV too large for csv_query: exceeded 5000000 bytes while streaming. Use `csv_query_xl` (paid: $0.02/call or $0.01 prepaid, up to 100 MB) with the same arguments. If you have no balance yet, csv_query_xl will return funding instructions (card or USDC).";
+  const HEADERS = "`headers` key [redacted] is not allowed. Allowed keys: authorization, cookie, x-api-key.";
+
+  // --- Primero, lo que NO debe cambiar de clase -----------------------------
+  // Limites sobre lo que el llamante escribe en el argumento: siguen siendo suyos.
+  for (const detail of [
+    "PDF too large: 9000000 bytes (max 5000000 for inline data — use `url` for larger files).",
+    "Image too large: 9000000 bytes (max 5000000)",
+    "Input too large: max 5000 lines per string (a: 9000, b: 12).",
+    "duration too large — max 10s per call",
+    "duration_seconds too large — max 30 minutes per call",
+    "text too long — max 2000 characters per call",
+  ]) {
+    assert(`caller   ← ${detail.slice(0, 52)}`, classifyToolError(detail) === "caller", classifyToolError(detail));
+  }
+  // Y el media que no cabe en una tool de pago sigue donde estaba.
+  assert(
+    "caller   ← Source file too large (fal)",
+    classifyToolError("Source file too large (9000000 bytes, max 5000000) — this tool's pricing/runtime assumes a bounded source size. Downscale it first.") === "caller",
+    "expected caller"
+  );
+
+  // --- La regla -------------------------------------------------------------
+  for (const detail of [
+    TOO_LARGE,
+    "CSV too large for csv_query_xl: exceeded 100000000 bytes while streaming. This file exceeds even csv_query_xl's 100 MB cap.",
+    "JSON too large for json_query: 9000000 bytes (max 5000000). Use `json_query_xl` (paid) with the same arguments.",
+    "PDF too large: 30000000 bytes (max 20000000).",
+    "Page too large: 9000000 bytes (max 5000000).",
+  ]) {
+    assert(`upstream ← ${detail.slice(0, 52)}`, classifyToolError(detail) === "upstream", classifyToolError(detail));
+    assert(`…y sanearlo no cambia la clase`, classifyToolError(redactDetail(detail)) === "upstream", String(redactDetail(detail)));
+  }
+
+  // --- El incidente tal cual llego ------------------------------------------
+  const row = (detail: string, payer: string, client_name: string | null): WindowRow => ({
+    tool_name: "csv_query",
+    payment_type: "tool_error",
+    detail,
+    client_name,
+    client: "",
+    payer,
+  });
+  const incident = findBrokenTools([
+    row(TOO_LARGE, "anon:b9a8c5d9647f", null),
+    row(HEADERS, "anon:b9a8c5d9647f", null),
+    row(TOO_LARGE, "anon:fc8c4578c711", null),
+    row(HEADERS, "anon:fc8c4578c711", "test"),
+    row(TOO_LARGE, "anon:68f406dba146", "test"),
+    row(TOO_LARGE, "anon:68f406dba146", "test"),
+  ]);
+  assert(
+    "la alerta del 2026-11-21 sale del agregado, pero ya no como 'solo argumentos'",
+    incident.length === 1 && incident[0].tool === "csv_query" && incident[0].kinds === "caller+upstream",
+    JSON.stringify(incident)
+  );
+  assert(
+    "…asi que la decide el canario: si el fetch saliente llega, no se pagina",
+    incident.length === 1 && !brokenToolPages(incident[0], { ok: true, detail: "https://www.cloudflare.com/robots.txt" }),
+    "expected not paged"
+  );
+  assert(
+    "…y si el canario tampoco llega, si",
+    incident.length === 1 && brokenToolPages(incident[0], { ok: false, detail: "caido" }),
+    "expected paged"
+  );
 }
 
 // ---------------------------------------------------------------------------

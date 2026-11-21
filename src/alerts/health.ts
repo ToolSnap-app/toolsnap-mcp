@@ -1,6 +1,7 @@
 import type { Env } from "../index.js";
 import { isD1Unavailable } from "../d1-errors.js";
 import { sendTelegram } from "./telegram.js";
+import { page } from "./agent.js";
 import { classifyToolError } from "./error-classification.js";
 import { isProbeClient } from "../analytics/surface.js";
 import { safeFetch } from "../tools/safe-fetch.js";
@@ -483,7 +484,7 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
       continue;
     }
     if (!(await shouldAlert(env.X402_NONCES, `health:broken:${b.tool}`, BREAKAGE_DEDUPE_SEC))) continue;
-    await sendTelegram(
+    await page(
       env,
       [
         `🔴 *tool fallando para todo el mundo* · \`${b.tool}\``,
@@ -497,7 +498,23 @@ export async function checkServerHealth(env: Env, now: Date = new Date()): Promi
           : null,
       ]
         .filter((l): l is string => l !== null)
-        .join("\n")
+        .join("\n"),
+      // Fase 1 del agente de alertas (agent.ts): tambien lo triaja, en sombra.
+      {
+        kind: "broken_tool",
+        fingerprint: `health:broken:${b.tool}`,
+        facts: {
+          tool: b.tool,
+          errors: b.errors,
+          total: b.total,
+          pct: b.pct,
+          agents_affected: b.payers,
+          error_class: b.kinds,
+          canary: canary ? (canary.ok ? "ok" : "failing") : "not_run",
+        },
+        untrusted: { top_detail: b.topDetail, agents: formatAgents(b.agents), canary_detail: canary?.detail },
+        tool: b.tool,
+      }
     );
   }
 }

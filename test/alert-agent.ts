@@ -21,6 +21,7 @@
  *
  * Run: npx tsx test/alert-agent.ts
  */
+import { readFileSync } from "node:fs";
 import {
   page,
   fireAgent,
@@ -423,6 +424,16 @@ try {
     assert("at most 20 verdicts per hour reach the pager", last === 429 && net.tg.length === 20, `${last}, ${net.tg.length} sent`);
     const next = await handleAgentVerdict(verdictRequest(GOOD), env(), T0 + HOUR + 100);
     assert("…and the cap lifts the next hour", next.status === 200, String(next.status));
+  }
+
+  console.log("\nrouting");
+  {
+    // run_worker_first is a list: a path it does not cover is answered by the
+    // asset router (405 for a POST) and never reaches the Worker. The first
+    // deploy of the agent shipped exactly that.
+    const wr = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+    const list = /"run_worker_first":\s*\[([\s\S]*?)\]/.exec(wr)?.[1] ?? "";
+    assert("run_worker_first covers /alerts/* (the verdict endpoint)", list.includes('"/alerts/*"'));
   }
 } finally {
   globalThis.fetch = realFetch;

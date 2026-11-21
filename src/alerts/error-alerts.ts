@@ -1,4 +1,5 @@
-import { sendTelegram, type TelegramEnv } from "./telegram.js";
+import { sendTelegram } from "./telegram.js";
+import { page, type AgentEnv } from "./agent.js";
 import { isPagedToolError } from "./error-classification.js";
 import { PAID_TYPES_SET } from "../analytics/payment-types.js";
 
@@ -13,7 +14,8 @@ import { PAID_TYPES_SET } from "../analytics/payment-types.js";
  * message, not one per call.
  */
 
-interface AlertEnv extends TelegramEnv {
+/** AgentEnv = Telegram + the optional alert-agent settings (src/alerts/agent.ts). */
+interface AlertEnv extends AgentEnv {
   X402_NONCES?: KVNamespace;
 }
 
@@ -131,7 +133,17 @@ export function maybeAlertError(env: AlertEnv, ctx: ExecutionContext, params: Er
           `payer: ${truncatePayer(payer)}${client ? ` · client: ${client}` : ""}`,
         ].filter((l): l is string => l !== null);
 
-        await sendTelegram(env, lines.join("\n"));
+        // What survives to this line is a page, so the alert agent gets it too
+        // (shadow mode: it answers with a verdict under the alert, see agent.ts).
+        // Its dedupe key doubles as the incident fingerprint.
+        await page(env, lines.join("\n"), {
+          kind: paymentType,
+          fingerprint: key,
+          facts: { tool: toolName, payment_type: paymentType, provider },
+          untrusted: { detail, payer, client, client_name: clientName },
+          tool: toolName,
+          payer,
+        });
       } catch {
         // Alerts must never break the caller.
       }

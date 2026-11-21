@@ -9,6 +9,7 @@ import { checkSurfaceDigest } from "./alerts/surface-digest.js";
 import { checkServerHealth } from "./alerts/health.js";
 import { recordCronOk, recordCronError } from "./alerts/cron-status.js";
 import { sendTelegram } from "./alerts/telegram.js";
+import { page, handleAgentVerdict } from "./alerts/agent.js";
 import { checkDeployWatch } from "./alerts/deploy-watch.js";
 import { looksLikeApiKey, issueKey, revokeKey, accountExists, accountAddress, verifyApiKey, touchKey } from "./fiat/keys.js";
 import { debitBalance, refundDebit, getBalanceMicro, microToUsdc, usdcToMicro } from "./x402/prepaid.js";
@@ -68,6 +69,16 @@ export interface Env {
   // review routine; separate from ADMIN_API_KEY, which can call paid tools
   // for free). Set via: wrangler secret put ANALYTICS_READ_TOKEN
   ANALYTICS_READ_TOKEN?: string;
+
+  // Alert agent, phase 1 (shadow mode) — src/alerts/agent.ts. All optional:
+  // without the first two no alert is handed to the triage task, without the
+  // third POST /alerts/agent/verdict answers 404.
+  //   ALERT_AGENT_FIRE_URL    API trigger of the Claude Code scheduled task
+  //   ALERT_AGENT_FIRE_TOKEN  its bearer (wrangler secret put)
+  //   ALERT_AGENT_TOKEN       bearer the agent presents with its verdict (wrangler secret put)
+  ALERT_AGENT_FIRE_URL?: string;
+  ALERT_AGENT_FIRE_TOKEN?: string;
+  ALERT_AGENT_TOKEN?: string;
 
   // Fase 24.6 — salt for hashing anonymous-caller IPs into stable pseudonyms
   // (analytics/surface.ts anonPayerId), so unique anonymous agents can be
@@ -968,6 +979,13 @@ const handler = {
       }
     }
 
+    // Alert agent, phase 1 — the triage task's verdict on an alert, posted as a
+    // plain-text reply under it in the alerts chat. Own bearer, and the only
+    // thing that bearer can do (src/alerts/agent.ts).
+    if (method === "POST" && url.pathname === "/alerts/agent/verdict") {
+      return handleAgentVerdict(request, env);
+    }
+
     // A16 — relayer gas balance against Unai's $5 floor / $50 cap. Same
     // read-only token and headless prefix as /reports/analytics; pages the
     // alerts chat (deduped 24h) when out of range; reads are memoized 60 s so
@@ -1412,16 +1430,26 @@ const handler = {
               await env.X402_NONCES.put(key, "1", {
                 expirationTtl: xCredits ? CRON_X_CREDITS_TTL_SEC : CRON_FAIL_TTL_SEC,
               });
-              await sendTelegram(
-                env,
-                xCredits
-                  ? [
-                      `🟠 *API de X sin creditos* · \`${name}\``,
-                      `Las metricas de engagement no se actualizan. Publicar sigue funcionando.`,
-                      `Recarga en console.x.com o baja X_METRICS_WINDOW_D. Este aviso se repite cada 7 dias.`,
-                    ].join("\n")
-                  : [`🔴 *cron fallando* · \`${name}\``, `error: ${msg}`].join("\n")
-              );
+              if (xCredits) {
+                await sendTelegram(
+                  env,
+                  [
+                    `🟠 *API de X sin creditos* · \`${name}\``,
+                    `Las metricas de engagement no se actualizan. Publicar sigue funcionando.`,
+                    `Recarga en console.x.com o baja X_METRICS_WINDOW_D. Este aviso se repite cada 7 dias.`,
+                  ].join("\n")
+                );
+              } else {
+                // Un cron que revienta tambien va al agente de alertas (en
+                // sombra, src/alerts/agent.ts). El de creditos de X no: es
+                // conocido y lo arregla una recarga, no un triaje.
+                await page(env, [`🔴 *cron fallando* · \`${name}\``, `error: ${msg}`].join("\n"), {
+                  kind: "cron_failed",
+                  fingerprint: key,
+                  facts: { cron: name },
+                  untrusted: { error: msg },
+                });
+              }
             }
           } catch {
             // El aviso nunca puede tumbar el handler.

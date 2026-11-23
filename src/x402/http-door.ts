@@ -13,8 +13,9 @@
 
 import type { Env } from "../index.js";
 import { dispatch } from "../mcp/server.js";
-import { requiresPayment, getToolPrice, isPaymentRequiredResult, type ToolPrice } from "./middleware.js";
-import { HTTP_TOOL_PREFIX, buildHttpPaymentRequired } from "./discovery.js";
+import { requiresPayment, getToolPrice, isPaymentRequiredResult, USDC_ADDRESS, type ToolPrice } from "./middleware.js";
+import { HTTP_TOOL_PREFIX, PUBLIC_ORIGIN, buildHttpPaymentRequired, httpResourceUrl } from "./discovery.js";
+import { issueReceipt, publicKeyFromPrivateKey } from "@paxiom/receipts/web";
 
 
 function b64encodeJson(value: unknown): string {
@@ -31,7 +32,36 @@ function b64decodeJson(value: string): unknown {
 }
 
 /** Headers browser-based x402 clients need to read on the HTTP door. */
-export const X402_EXPOSE_HEADERS = "PAYMENT-REQUIRED, PAYMENT-RESPONSE";
+export const X402_EXPOSE_HEADERS =
+  "PAYMENT-REQUIRED, PAYMENT-RESPONSE, Payment-Receipt, X-Paxiom-Receipt";
+
+export const DEFAULT_PAXIOM_KEY_ID = "toolsnap-x402-1";
+
+/**
+ * GET /.well-known/x402-keys.json — published Ed25519 receipt signing key when
+ * PAXIOM_PRIVATE_KEY_PEM is configured. Returns null (404) when unset.
+ */
+export async function buildWellKnownX402Keys(env: Env): Promise<Record<string, unknown> | null> {
+  const pem = env.PAXIOM_PRIVATE_KEY_PEM?.trim();
+  if (!pem) return null;
+  try {
+    const publicKey = await publicKeyFromPrivateKey(pem);
+    return {
+      issuer: PUBLIC_ORIGIN,
+      payTo: env.X402_PAY_TO_ADDRESS,
+      keys: [
+        {
+          keyId: env.PAXIOM_KEY_ID?.trim() || DEFAULT_PAXIOM_KEY_ID,
+          algorithm: "ed25519",
+          publicKey,
+        },
+      ],
+    };
+  } catch (err) {
+    console.warn("x402-keys manifest skipped:", err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
 
 function jsonOut(data: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
@@ -89,9 +119,11 @@ export async function handleX402HttpTool(
   // Unauthenticated probes must reach the 402 before any body validation, so
   // a missing or malformed body only matters once a payment is attached.
   let args: Record<string, unknown> = {};
+  let rawRequestBody = "";
   let bodyOk = true;
   try {
     const text = await request.text();
+    rawRequestBody = text;
     if (text.trim()) {
       const parsed = JSON.parse(text) as unknown;
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -191,6 +223,81 @@ export async function handleX402HttpTool(
     data = { result: text };
   }
   const settlement = r.result._meta?.["x402/payment-response"];
-  return jsonOut(data, 200, settlement ? { "PAYMENT-RESPONSE": b64encodeJson(settlement) } : {});
+  const extraHeaders: Record<string, string> = settlement
+    ? { "PAYMENT-RESPONSE": b64encodeJson(settlement) }
+    : {};
+
+  const signingKey = env.PAXIOM_PRIVATE_KEY_PEM?.trim();
+  if (signingKey) {
+    try {
+      const keyId = env.PAXIOM_KEY_ID?.trim() || DEFAULT_PAXIOM_KEY_ID;
+      const quoted = quote(toolName, env, args);
+      const sObj =
+        settlement && typeof settlement === "object"
+          ? (settlement as Record<string, unknown>)
+          : null;
+      const isZeroCharge = sObj?.free === true || !sObj;
+      const settleFailed = sObj?.success === false;
+      const rawTx =
+        typeof sObj?.transaction === "string" && sObj.transaction.trim()
+          ? sObj.transaction.trim()
+          : null;
+      const payer = typeof sObj?.payer === "string" && sObj.payer ? sObj.payer : undefined;
+      const resourceUrl = httpResourceUrl(toolName);
+
+      const { receiptHeader } = await issueReceipt({
+        privateKey: signingKey,
+        issuer: {
+          name: "ToolSnap",
+          uri: PUBLIC_ORIGIN,
+          keyId,
+          payTo: env.X402_PAY_TO_ADDRESS,
+          keysUri: `${PUBLIC_ORIGIN}/.well-known/x402-keys.json`,
+        },
+        service: {
+          name: "ToolSnap",
+          resource: resourceUrl,
+          method: "POST",
+        },
+        request: {
+          method: "POST",
+          resource: resourceUrl,
+          body: rawRequestBody,
+        },
+        payment: {
+          scheme: "exact",
+          network: typeof sObj?.network === "string" ? sObj.network : "eip155:8453",
+          asset: USDC_ADDRESS,
+          amountAtomic: isZeroCharge || settleFailed ? "0" : quoted.payPerCallMicro.toString(),
+          amountDisplay: isZeroCharge || settleFailed ? "0" : quoted.payPerCallStr,
+          ...(payer ? { payer } : {}),
+          payTo: env.X402_PAY_TO_ADDRESS,
+          paymentPayload: paymentHeader,
+          settlement: {
+            status: settleFailed
+              ? "failed"
+              : rawTx
+              ? "claimed_not_checked"
+              : sObj?.free === true
+              ? "not_required"
+              : "verify_only",
+            transactionHash: settleFailed ? null : rawTx,
+            checkedByVerifier: false,
+          },
+        },
+        output: data,
+        mimeType: "application/json",
+        canonicalization: "jcs-sha256",
+        statusCode: 200,
+      });
+      extraHeaders["Payment-Receipt"] = receiptHeader;
+      extraHeaders["X-Paxiom-Receipt"] = receiptHeader;
+    } catch (err) {
+      // Never fail an already-settled call if the optional receipt key is malformed.
+      console.warn("paxiom receipt signing skipped:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return jsonOut(data, 200, extraHeaders);
 }
 

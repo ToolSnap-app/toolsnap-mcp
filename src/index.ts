@@ -17,7 +17,7 @@ import { handleCmsAuthStart, handleCmsAuthCallback } from "./cms-auth.js";
 import { verifyPolarSignature, debugPolarSignature, getOrCreateAccountByEmail, creditOrder } from "./fiat/polar.js";
 import { writeEvent } from "./analytics/logger.js";
 import { handleRestTool } from "./rest-tools.js";
-import { handleX402HttpTool, X402_EXPOSE_HEADERS } from "./x402/http-door.js";
+import { handleX402HttpTool, buildWellKnownX402Keys, X402_EXPOSE_HEADERS } from "./x402/http-door.js";
 import { buildWellKnownX402, buildOpenApi, HTTP_TOOL_PREFIX } from "./x402/discovery.js";
 import { isD1Unavailable, d1UnavailableResponse, d1UnavailableRpc } from "./d1-errors.js";
 import { looksLikeOAuthToken, verifyOAuthToken, touchOAuthToken } from "./oauth/tokens.js";
@@ -61,6 +61,12 @@ export interface Env {
   X402_SETTLER?: string;
   CDP_API_KEY_ID?: string;
   CDP_API_KEY_SECRET?: string;
+
+  // Optional Ed25519 delivery receipts on /x402/tools/* (Payment-Receipt header
+  // + /.well-known/x402-keys.json). Unset = no-op. Generate with `npx @paxiom/receipts keygen`
+  // and upload via `wrangler secret put PAXIOM_PRIVATE_KEY_PEM`.
+  PAXIOM_PRIVATE_KEY_PEM?: string;
+  PAXIOM_KEY_ID?: string;
 
   // Admin bypass key (set via: wrangler secret put ADMIN_API_KEY)
   ADMIN_API_KEY?: string;
@@ -1333,6 +1339,10 @@ const handler = {
     // reaches the door, which answers 405 itself.
     if (method === "GET" && url.pathname === "/.well-known/x402") {
       return jsonResponse(buildWellKnownX402());
+    }
+    if (method === "GET" && url.pathname === "/.well-known/x402-keys.json") {
+      const keysDoc = await buildWellKnownX402Keys(env);
+      if (keysDoc) return jsonResponse(keysDoc);
     }
     if (method === "GET" && url.pathname === "/openapi.json") {
       return jsonResponse(buildOpenApi(env));
